@@ -1,0 +1,13 @@
+/target/
+/.worktrees/
+/.local/
+
+# Third-party full-text archives stay local until redistribution is authorized.
+/docs/references/vibe-your-own-gui-framework/
+
+# Machine-local credentials and settings must never enter version control.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
