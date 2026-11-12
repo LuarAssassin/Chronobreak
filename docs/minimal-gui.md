@@ -2,7 +2,7 @@
 
 ## 复验
 
-在真实桌面会话运行 `CHRONOBREAK_TRACE=1 cargo run --locked`，确认日志适配器与画面。截图仅作本地验证，不提交。
+在真实桌面会话运行 `CHRONOBREAK_TRACE=1 cargo run --example counter --locked`，确认日志适配器与画面。截图仅作本地验证，不提交。以下是原型阶段的历史记录；当前 API 与本轮证据见 [可复用核心验证](reusable-core.md)。
 
 1. 确认标题、中文段落、蓝色按钮和初始计数 0，无缺字方框。
 2. 点击按钮两次，画面依次显示 1、2，日志 `changed=1`；仅松开或拖出按钮不计数。

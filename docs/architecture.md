@@ -25,9 +25,17 @@ Chronobreak 是用 Rust 构建的保留模式、自绘 GUI 框架，不是对现
 
 - `src/ui.rs`：builder 挂载一次，节点与 taffy ID 保留；文本 buffer 同时用于布局测量和 glyphon 绘制。宽度约束交给 cosmic-text 的 `WordOrGlyph` 排版，最终布局宽度再次同步至 buffer。
 - `src/signal.rs`：UI 线程 `Rc<RefCell<_>>` 状态；更新在释放借用后通知订阅，值未变化不通知。不承诺跨线程或可重入写入的事务语义。节点持有 RAII 订阅，整棵树销毁时解绑，订阅闭包仅弱引用待更新队列，不延长树寿命。
-- 多次更新按节点合并为最后的文本，`Scene::sync` 只修改订阅节点并标记 taffy 脏路径；不重建 UI 树。不做通用依赖自动追踪、树 diff、动态子树增删或跨 Signal 事务；未来增删节点时必须先释放对应订阅并清除待处理项。
+- `Element::bound_text(&Signal<T>, Fn(T) -> String)` 支持 `Clone + PartialEq + 'static` 状态与可捕获环境的闭包。私有类型擦除把最新原始值排队，格式化闭包归节点所有，不放进 Signal 监听器；即使格式化闭包捕获源 Signal，也不形成 Signal → 监听器 → Signal 强引用环。初始化在挂载时读取最新值，之后同帧多次更新按节点、属性合并，格式化只处理最终文本值。`Scene::sync` 修改绑定节点并标记 taffy 脏路径，不重建 UI 树。
+- `Element::visible(&Signal<bool>)` 使用 taffy `Display::None`，隐藏父节点排除整棵后代的布局空间、显示列表与命中，保留状态、节点和订阅。文本与显示订阅一并 RAII 释放；隐藏更新取消当前按压，松开不能误触发。暂不做通用依赖自动追踪、树 diff、动态子树增删或跨 Signal 事务。
 - `src/render.rs`：独立显示列表按父背景、父文本、子节点顺序提交 GPU，矩形 scissor 和文本 bounds 使用继承裁剪；每个文本节点单独保留 renderer，避免把所有文本错误地提升到背景之上。首版每次脏事件全帧重绘，不宣称 GPU 局部重绘。
-- `src/main.rs`：布局和命中使用逻辑像素；窗口尺寸、指针输入、surface、scissor 使用物理像素，通过窗口 scale factor 转换。零尺寸不渲染，恢复与 DPI 变化重新布局；失效 surface 重配，超时跳过本帧。空闲使用 `ControlFlow::Wait`，点击或窗口事件请求重绘。外部状态写入需要调用方安排同步与重绘，尚无跨线程唤醒器。
+- `src/application.rs`：`Application::new(root).title(...).run()` 统一拥有窗口、事件循环、Scene、Renderer 和重绘调度，无业务专用状态。布局和命中使用逻辑像素；窗口尺寸、指针输入、surface、scissor 使用物理像素，通过窗口 scale factor 转换。零尺寸不渲染，恢复与 DPI 变化重新布局；surface 临时故障有节奏地等待 100ms 重试，成功后回到 `ControlFlow::Wait`，不忙循环。UI 点击回调后框架请求重绘并同步绑定，无需示例手写同步；尚无外部事件／跨线程唤醒器。
+- `examples/counter.rs` 与 `examples/state_panel.rs`：全部业务状态、界面构造和回调；库不包含计数器 demo。两个示例共用唯一窗口事件循环。
+
+## 同步与生命周期
+
+Signal 在 UI 线程同步通知订阅；修改值的闭包执行期间仍持有可变借用，不能在其中再次读取或写入同一 Signal。订阅回调在释放借用后调用，可以读取状态；不保证递归写入的通知顺序或事务一致性（一次通知先复制监听器列表，取消订阅不撤回已复制的通知）。格式化闭包在挂载／帧同步时运行，应只格式化，不承担状态写入或副作用。捕获其他 Signal 不构成自动依赖。
+
+订阅取消通过弱引用，不延长 Signal 生命周期；框架监听器仅弱引用待更新队列，节点持有格式化闭包与所有订阅。应用自己调用 `Signal::subscribe` 时应避免把源 Signal 强引用捕获进监听器，或确保外部 Subscription 按时释放。没有跨线程事务或通用动态子树销毁协议。
 
 ## 参考来源
 

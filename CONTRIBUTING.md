@@ -16,7 +16,7 @@
 1. 从最新 `main` 创建任务分支；提交只包含该任务的改动。
 2. 提交 Pull Request，说明目的、实现、验证命令与结果，以及明确存在的限制。
 3. 由负责实现以外的审查者检查差异；多个 agent 共用 GitHub 身份时，不伪造独立账户审批。
-4. Rust 工程建立后，合并前必须通过 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`；图形路径还需实际运行验证，不能把单元测试通过称为 GUI 已跑通。
+4. 合并前必须通过 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、`cargo build --examples --locked`；图形路径还需实际运行验证，不能把单元测试通过称为 GUI 已跑通。
 5. 默认 squash merge，保留清晰的功能级历史；合并后同步 `main`，删除不再使用的分支与 worktree。
 
 不直接向 `main` 堆积未完成实现，不 force-push `main`。相关 CI 与仓库端合并限制须在配置并验证后才称为已启用；本文件是协作约定，不是设置生效的证明。
