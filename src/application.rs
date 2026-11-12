@@ -1,7 +1,6 @@
-use chronobreak::{
+use crate::{
     render::{DrawOutcome, Renderer, Result},
-    signal::Signal,
-    ui::{Scene, demo},
+    ui::{Element, Scene},
 };
 use std::{
     sync::Arc,
@@ -49,11 +48,11 @@ impl RedrawSchedule {
     }
 }
 
-struct App {
+pub struct Application {
     renderer: Option<Renderer>,
     window: Option<Arc<Window>>,
     scene: Scene,
-    counter: Signal<u64>,
+    title: String,
     cursor: Option<PhysicalPosition<f64>>,
     occluded: bool,
     error: Option<Box<dyn std::error::Error>>,
@@ -61,7 +60,33 @@ struct App {
     redraw_schedule: RedrawSchedule,
 }
 
-impl App {
+impl Application {
+    pub fn new(root: Element) -> Self {
+        Self {
+            renderer: None,
+            window: None,
+            scene: Scene::new(root),
+            title: "Chronobreak".into(),
+            cursor: None,
+            occluded: false,
+            error: None,
+            trace: std::env::var_os("CHRONOBREAK_TRACE").is_some(),
+            redraw_schedule: RedrawSchedule::default(),
+        }
+    }
+
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
+        self
+    }
+
+    pub fn run(mut self) -> Result<()> {
+        let event_loop = EventLoop::new()?;
+        event_loop.set_control_flow(ControlFlow::Wait);
+        event_loop.run_app(&mut self)?;
+        self.error.map_or(Ok(()), Err)
+    }
+
     fn redraw(&mut self) -> Result<()> {
         let window = self.window.as_ref().unwrap();
         let size = window.inner_size();
@@ -91,17 +116,15 @@ impl App {
                 .map(|buffer| buffer.layout_runs().count())
                 .sum();
             eprintln!(
-                "frame physical={}x{} scale={scale} count={} changed={changed} text_lines={lines}",
-                size.width,
-                size.height,
-                self.counter.get()
+                "frame physical={}x{} scale={scale} changed={changed} text_lines={lines}",
+                size.width, size.height,
             );
         }
         Ok(())
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler for Application {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -110,7 +133,7 @@ impl ApplicationHandler for App {
             let window = Arc::new(
                 event_loop.create_window(
                     Window::default_attributes()
-                        .with_title("Chronobreak — Rust 自绘 GUI")
+                        .with_title(&self.title)
                         .with_inner_size(LogicalSize::new(760.0, 520.0)),
                 )?,
             );
@@ -227,33 +250,15 @@ impl ApplicationHandler for App {
     }
 }
 
-fn main() -> Result<()> {
-    let event_loop = EventLoop::new()?;
-    event_loop.set_control_flow(ControlFlow::Wait);
-    let counter = Signal::new(0);
-    let mut app = App {
-        renderer: None,
-        window: None,
-        scene: Scene::new(demo(&counter)),
-        counter,
-        cursor: None,
-        occluded: false,
-        error: None,
-        trace: std::env::var_os("CHRONOBREAK_TRACE").is_some(),
-        redraw_schedule: RedrawSchedule::default(),
-    };
-    event_loop.run_app(&mut app)?;
-    app.error.map_or(Ok(()), Err)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signal::Signal;
 
     #[test]
     fn synced_update_is_retried_without_another_input() {
         let counter = Signal::new(0);
-        let mut scene = Scene::new(demo(&counter));
+        let mut scene = Scene::new(Element::bound_text(&counter, |value| value.to_string()));
         let mut schedule = RedrawSchedule::default();
         let now = Instant::now();
         counter.update(|value| *value += 1);
@@ -271,7 +276,7 @@ mod tests {
                 .nodes
                 .iter()
                 .filter_map(|node| node.buffer.as_ref())
-                .any(|buffer| buffer.lines[0].text() == "点击计数：1  /  点击这里 +1")
+                .any(|buffer| buffer.lines[0].text() == "1")
         );
         schedule.complete(DrawOutcome::Presented, now + RETRY_DELAY);
         assert_eq!(schedule.control_flow(), ControlFlow::Wait);
