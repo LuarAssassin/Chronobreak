@@ -1,0 +1,13 @@
+[package]
+name = "chronobreak"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bytemuck = { version = "1.23", features = ["derive"] }
+glyphon = "0.9"
+pollster = "0.4"
+taffy = "0.7"
+wgpu = "25"
+winit = "0.30"

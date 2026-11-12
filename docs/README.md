@@ -1,6 +1,7 @@
 # 文档与参考资料
 
 - [初始架构方向](architecture.md)：第一版技术取舍与可运行目标。
+- [最小 GUI 验证](minimal-gui.md)：运行方式、交互复验与图形证据。
 - [协作与分支](../CONTRIBUTING.md)：分支、agent 隔离、验证与合并约定。
 
 ## 外部参考
