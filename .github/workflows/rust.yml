@@ -1,0 +1,27 @@
+name: Rust
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ['**']
+
+permissions:
+  contents: read
+
+jobs:
+  rust-checks:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1 libvulkan1 mesa-vulkan-drivers fonts-noto-cjk
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
