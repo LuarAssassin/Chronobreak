@@ -1,2 +1,20 @@
 # Chronobreak
-A Rust GUI framework exploring retained UI, reactive state, and GPU-driven rendering.
+
+用 Rust 构建我们自己的 GUI 框架。
+
+采用保留 UI 树、自绘渲染与响应式状态更新，逐步打通「界面描述 → 状态更新 → 布局与文字排版 → 绘制 → 窗口与交互」的闭环。复用成熟底层库，把精力投入框架核心。
+
+## 当前状态
+
+项目基础与参考资料已经建立；第一个实现目标是可调整窗口大小、显示中文、支持点击计数的信息卡片。功能在独立分支开发，通过审查与验证后合入 `main`。
+
+## 入口
+
+- [文档与参考资料](docs/README.md)
+- [初始架构方向](docs/architecture.md)
+- [协作与分支](CONTRIBUTING.md)
+- [项目索引](AGENTS.md)
+
+## 许可
+
+项目暂未选择开源许可证。第三方文章全文和媒体保留本地，公开仓库只提供来源引用与归档说明。
