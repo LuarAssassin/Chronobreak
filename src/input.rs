@@ -15,6 +15,7 @@ pub enum EventPhase {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyInput {
     pub logical_key: Key,
+    pub text: Option<String>,
     pub physical_key: PhysicalKey,
     pub location: KeyLocation,
     pub state: ElementState,
@@ -26,6 +27,7 @@ impl KeyInput {
     pub(crate) fn from_winit(event: KeyEvent, synthetic: bool) -> Self {
         Self {
             logical_key: event.logical_key,
+            text: event.text.map(|text| text.to_string()),
             physical_key: event.physical_key,
             location: event.location,
             state: event.state,
@@ -128,12 +130,12 @@ struct DispatchOutcome {
 pub(super) struct Interaction {
     pointer: Option<(f32, f32)>,
     hovered: Vec<NodeId>,
-    captured: Option<NodeId>,
-    focused: Option<NodeId>,
+    pub(super) captured: Option<NodeId>,
+    pub(super) focused: Option<NodeId>,
     space: Option<(NodeId, PhysicalKey)>,
     held: HashSet<PhysicalKey>,
     buttons: HashSet<MouseButton>,
-    modifiers: ModifiersState,
+    pub(super) modifiers: ModifiersState,
     composing: bool,
 }
 
@@ -142,7 +144,7 @@ impl Scene {
         self.enabled(id)
     }
 
-    fn enabled(&self, id: NodeId) -> bool {
+    pub(super) fn enabled(&self, id: NodeId) -> bool {
         self.nodes.get(id).is_some_and(|node| {
             node.visible && !node.disabled && node.parent.is_none_or(|parent| self.enabled(parent))
         })
@@ -238,17 +240,19 @@ impl Scene {
         }
     }
 
-    fn set_capture(&mut self, target: Option<NodeId>) {
+    pub(super) fn set_capture(&mut self, target: Option<NodeId>) {
         let previous = std::mem::replace(&mut self.interaction.captured, target);
         if previous != target
             && let Some(previous) = previous.filter(|id| self.enabled(*id))
         {
+            self.stop_text_drag(previous);
             self.dispatch(previous, EventKind::CaptureLost);
         }
     }
 
     fn set_focus(&mut self, target: Option<NodeId>) {
         if self.interaction.focused != target {
+            self.text_focus_changed(self.interaction.focused, target);
             self.interaction.focused = target;
             self.focus_reveal = target;
             self.interaction.space = None;
@@ -277,6 +281,7 @@ impl Scene {
     }
 
     pub(super) fn reconcile_interaction(&mut self) {
+        self.reconcile_editors();
         if self.pressed.is_some_and(|id| !self.enabled(id)) {
             self.pressed = None;
         }
@@ -333,8 +338,12 @@ impl Scene {
         crate::batch(|| {
             self.interaction.pointer = Some((x, y));
             self.reconcile_hover();
-            if let Some(target) = self.interaction.captured.or_else(|| self.deepest_hit(x, y)) {
-                self.dispatch(target, EventKind::PointerMove);
+            if let Some(target) = self.interaction.captured.or_else(|| self.deepest_hit(x, y))
+                && !self
+                    .dispatch(target, EventKind::PointerMove)
+                    .default_prevented
+            {
+                self.text_pointer_move(target, x, y);
             }
         });
     }
@@ -399,6 +408,9 @@ impl Scene {
                     self.set_focus(focus);
                     self.focus_reveal = None;
                 }
+                if !prevented && let Some(target) = target {
+                    self.text_pointer_down(target, position);
+                }
                 false
             } else {
                 let pressed = self.pressed.take();
@@ -427,6 +439,7 @@ impl Scene {
 
     pub(super) fn cancel_pointer_interaction(&mut self) {
         if let Some(target) = self.interaction.captured.or(self.pressed) {
+            self.stop_text_drag(target);
             self.dispatch(target, EventKind::PointerCancel);
         }
         self.pressed = None;
@@ -483,7 +496,16 @@ impl Scene {
             } else {
                 None
             };
-            if prevented || input.synthetic || (down && (repeated || input.repeat)) {
+            if prevented || input.synthetic {
+                return;
+            }
+            if down
+                && let Some(id) = self.interaction.focused
+                && self.text_key(id, &input)
+            {
+                return;
+            }
+            if down && (repeated || input.repeat) {
                 return;
             }
             let modifiers = self.interaction.modifiers;

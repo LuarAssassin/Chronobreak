@@ -72,6 +72,14 @@ impl RedrawSchedule {
         self.retry_at
             .map_or(ControlFlow::Wait, ControlFlow::WaitUntil)
     }
+
+    fn with_blink(&self, blink: Option<Instant>) -> ControlFlow {
+        match (self.retry_at, blink) {
+            (Some(retry), Some(blink)) => ControlFlow::WaitUntil(retry.min(blink)),
+            (None, Some(blink)) => ControlFlow::WaitUntil(blink),
+            _ => self.control_flow(),
+        }
+    }
 }
 
 pub struct Application {
@@ -225,6 +233,10 @@ impl ApplicationHandler<UserEvent> for Application {
             let scale = window.scale_factor() as f32;
             self.scene
                 .flush(size.width as f32 / scale, size.height as f32 / scale);
+            self.scene.update_blink(
+                Instant::now(),
+                !self.occluded && size.width > 0 && size.height > 0,
+            );
             window.set_cursor(if self.scene.pointer_cursor() {
                 CursorIcon::Pointer
             } else {
@@ -247,9 +259,10 @@ impl ApplicationHandler<UserEvent> for Application {
         {
             window.request_redraw();
         }
-        event_loop.set_control_flow(self.redraw_schedule.control_flow());
+        let control_flow = self.redraw_schedule.with_blink(self.scene.blink_deadline());
+        event_loop.set_control_flow(control_flow);
         if self.trace {
-            eprintln!("wait {:?}", self.redraw_schedule.control_flow());
+            eprintln!("wait {control_flow:?}");
         }
     }
 
@@ -275,6 +288,8 @@ impl ApplicationHandler<UserEvent> for Application {
                     | WindowEvent::Focused(_)
                     | WindowEvent::KeyboardInput { .. }
                     | WindowEvent::ModifiersChanged(_)
+                    | WindowEvent::Occluded(_)
+                    | WindowEvent::Resized(_)
             )
         {
             eprintln!("input {event:?}");
@@ -390,6 +405,25 @@ impl ApplicationHandler<UserEvent> for Application {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blink_and_surface_retry_choose_earliest_deadline_without_idle_polling() {
+        let now = Instant::now();
+        let mut schedule = RedrawSchedule::default();
+        assert_eq!(schedule.with_blink(None), ControlFlow::Wait);
+        assert_eq!(schedule.with_blink(Some(now)), ControlFlow::WaitUntil(now));
+        schedule.complete(DrawOutcome::Retry, now);
+        assert_eq!(
+            schedule.with_blink(Some(now + Duration::from_secs(1))),
+            ControlFlow::WaitUntil(now + RETRY_DELAY)
+        );
+        assert_eq!(
+            schedule.with_blink(Some(now + Duration::from_millis(1))),
+            ControlFlow::WaitUntil(now + Duration::from_millis(1))
+        );
+        schedule.complete(DrawOutcome::Presented, now + RETRY_DELAY);
+        assert_eq!(schedule.with_blink(None), ControlFlow::Wait);
+    }
     use crate::signal::Signal;
 
     #[test]

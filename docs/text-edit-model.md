@@ -1,6 +1,6 @@
 # M3A：逻辑文字编辑模型
 
-2026-11-13，`feat/text-edit-model`，集成基线 `bea3c46c54fe6951caca0c30510af059fce86536`（M2b 已合入 PR #10）。本块 M3A:B1 仅为**实现候选，待协调者独立审查与合并**；不代表整个 M3 完成，也不代表 TextInput、剪贴板或原生 IME 已可用。
+2026-11-13，M3A:B1 已通过 **PR #11** 合入 `245f8eacca6b08f5838e1370e17aba274c993b75`；本文保留模型合同与原验证证据。当前进展见 [Alpha 状态](alpha-delivery-status.md)，控件适配见 [单行输入](text-input.md)；模型合入不等于整个 M3 或原生 IME 完成。
 
 ## 入口与边界
 
@@ -25,7 +25,7 @@ assert!(model.undo());
 assert_eq!(model.selected_text(), "👩🏽‍💻");
 ```
 
-没有 TextInput builder、键盘映射、光标/选区绘制、命中、剪贴板或 preedit 状态。允许逻辑保留换行（CRLF 是一个字符簇），不宣称多行控件。扫描与快照适用于小文本；不引入 rope、大文件编辑器或自研 Unicode/整形。
+模型本身不持 TextInput builder、键盘映射、绘制、命中、剪贴板或 preedit 状态；这些适配独立于模型。允许逻辑保留换行（CRLF 是一个字符簇），不宣称多行控件。扫描与快照适用于小文本；不引入 rope、大文件编辑器或自研 Unicode/整形。
 
 ## 字节、字符簇与逻辑方向
 

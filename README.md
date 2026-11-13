@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-提供可复用的 `Application` 库入口，业务界面位于 `examples/`。M1a/M1b/M1c 已分别合入 PR #6/#7/#8，M2a 已合入 PR #9，M2b 初始纵向视口已合入 **PR #10**。本分支增加 **M3A:B1 纯逻辑文字编辑模型候选，待审查**：字符簇/词移动删除、定向选择、有限撤销与程序替换；不是 TextInput 控件或原生 IME。横向/虚拟化、M3B 绑定/控件与真实 IME、主题系统及 LLM 产品仍未完成。taffy、cosmic-text / glyphon、wgpu / winit 负责布局、文字、自绘与窗口事件；当前不是完整控件库。用户已授权协调者连续推进 M3—M7，后续状态与发布门禁见 [Alpha 交付状态](docs/alpha-delivery-status.md)。
+提供可复用的 `Application` 库入口，业务界面位于 `examples/`。taffy、cosmic-text / glyphon、wgpu / winit 负责布局、文字、自绘与窗口事件；当前不是完整控件库。进展、候选、连续推进授权与发布门禁统一见 [Alpha 交付状态](docs/alpha-delivery-status.md)，不在首页维护另一份候选清单。
 
 ## 运行与验证
 
@@ -22,15 +22,16 @@ cargo run --example batched_updates --locked
 cargo run --example background_messages --locked
 cargo run --example input_routing --locked
 cargo run --example scroll_views --locked
+cargo run --example text_input --locked
 ```
 
 需要可访问的 X11 或 Wayland 会话；无独立 GPU 时可以使用 Mesa 的 Vulkan 软件适配器。中文依赖系统 CJK 字体回退；不内嵌或重新分发字体。依赖版本以提交的 `Cargo.lock` 为准，glyphon 0.9 与 wgpu 25 / cosmic-text 0.14 配套使用。
 
 `counter` 提供简单计数卡片；`state_panel` 提供独立计数器、中文说明及显示开关。隐藏不占布局空间、不绘制、不参与命中，恢复不重置计数。缩窄窗口中文自动换行，过小窗口裁剪，不提供滚动。普通按钮按下/松开必须对应同一控件，拖出释放不激活。失焦、尺寸/DPI 变化、已提交隐藏/禁用/卸载取消按压；无捕获时离窗取消，有效控件级捕获不因 `CursorLeft` 丢失。关闭窗口退出。
 
-### 逻辑文字模型（M3A 候选）
+### 文字编辑
 
-`TextEditModel` 提供 `replace_selection`、`move_cursor`、`delete`、定向 selection、嵌套 `edit_group` 与有界 undo/redo。字节偏移拒绝字符簇内部位置；逻辑方向不等于视觉 bidi。程序权威值经 `replace_programmatic` 更新，相同回声完整无操作，不同值清历史并将失效端点向后取整。实际 Signal 适配与 GUI/IME 留后续块；合同和公开 API 示例见 [逻辑文字模型](docs/text-edit-model.md)。`cargo run --example text_model --locked` 是无需桌面的真实 CLI 调用者。
+`TextEditModel` 提供字符簇/词、定向 selection、有限历史与程序替换，合同见 [逻辑文字模型](docs/text-edit-model.md)；`text_model` 是无需桌面的真实 CLI 调用者。`Element::text_input(&Signal<String>)` 接入单行编辑、受控同步、选区/光标与异步系统剪贴板；API、换行政策、闪烁和实测边界见 [单行输入](docs/text-input.md)。不宣称多行编辑器、完整视觉 bidi 或原生 IME。
 
 ### 输入交互（M2a，已合入 PR #9）
 

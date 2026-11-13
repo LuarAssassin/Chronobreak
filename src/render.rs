@@ -184,7 +184,8 @@ impl Renderer {
         for index in &drawable {
             let node = &scene.nodes[*index];
             if let Some(buffer) = &node.buffer {
-                let clip = physical_clip(node.clip, scale, self.config.width, self.config.height);
+                let (origin, inner_clip) = scene.text_geometry(*index);
+                let clip = physical_clip(inner_clip, scale, self.config.width, self.config.height);
                 self.texts
                     .entry(*index)
                     .or_insert_with(|| {
@@ -198,8 +199,8 @@ impl Renderer {
                         &self.viewport,
                         [TextArea {
                             buffer,
-                            left: node.bounds.x * scale,
-                            top: node.bounds.y * scale,
+                            left: origin.0 * scale,
+                            top: origin.1 * scale,
                             scale,
                             bounds: TextBounds {
                                 left: clip.0 as i32,

@@ -123,6 +123,7 @@ fn queued_update_unmount_slot_reuse_and_old_release_cannot_hit_new_node() {
     scene.pending.borrow_mut().insert(
         old_text,
         Update {
+            readonly: None,
             disabled: None,
             text: Some(Box::new(999_i32)),
             visible: Some(false),
