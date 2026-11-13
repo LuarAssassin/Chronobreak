@@ -21,6 +21,7 @@ mod render;
 pub mod signal;
 pub mod text_edit;
 pub mod ui;
+pub mod visual;
 
 pub use application::Application;
 pub use children::{Children, CommandReceipt, TreeError};
@@ -35,6 +36,7 @@ pub use ui::{
     Element, EventContext, EventKind, EventPhase, KeyInput, ScrollError, ScrollHandle,
     ScrollReceipt, ScrollSnapshot, UiEvent, WheelInput,
 };
+pub use visual::{Border, Shadow, linear_to_srgb, srgb_to_linear, srgb8, srgba8};
 pub use winit::{
     event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase},
     keyboard,

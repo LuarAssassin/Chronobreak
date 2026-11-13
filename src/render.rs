@@ -1,6 +1,6 @@
 use crate::{
     NodeId,
-    ui::{Bounds, Color, Paint, Scene},
+    ui::{Bounds, Color, Frame, Paint},
 };
 use glyphon::{
     Cache, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -10,7 +10,6 @@ use std::{
     error::Error,
     sync::Arc,
 };
-use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -47,7 +46,207 @@ fn acquire_frame<T>(
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 2],
+    local: [f32; 2],
+    half_size: [f32; 2],
     color: Color,
+    border_color: Color,
+    parameters: [f32; 4],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Draw {
+    Primitives {
+        start: u32,
+        end: u32,
+        clip: (u32, u32, u32, u32),
+    },
+    Text(NodeId),
+}
+
+fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("finite primitives"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("rect.wgsl").into()),
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("finite primitives"), layout: None,
+        vertex: wgpu::VertexState {
+            module: &shader, entry_point: Some("vertex"), compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Vertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4],
+            }],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader, entry_point: Some("fragment"), compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+        }),
+        primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview: None, cache: None,
+    })
+}
+
+fn compile(
+    paints: &[Paint],
+    scale: f32,
+    width: u32,
+    height: u32,
+    batch: bool,
+) -> (Vec<Vertex>, Vec<Draw>) {
+    let mut vertices = Vec::new();
+    let mut draws = Vec::new();
+    for paint in paints {
+        let (bounds, clip, color, radius, border, blur, rotation) = match *paint {
+            Paint::Text(id) => {
+                draws.push(Draw::Text(id));
+                continue;
+            }
+            Paint::Rect {
+                bounds,
+                clip,
+                color,
+            } => (bounds, clip, color, 0.0, None, 0.0, [1.0, 0.0]),
+            Paint::Shape {
+                bounds,
+                clip,
+                color,
+                radius,
+                border,
+                blur,
+            } => (bounds, clip, color, radius, border, blur, [1.0, 0.0]),
+            Paint::Segment {
+                origin,
+                clip,
+                segment,
+            } => {
+                let delta = [
+                    segment.to[0] - segment.from[0],
+                    segment.to[1] - segment.from[1],
+                ];
+                let length = delta[0].hypot(delta[1]);
+                let rotation = if length > 0.0 {
+                    [delta[0] / length, delta[1] / length]
+                } else {
+                    [1.0, 0.0]
+                };
+                let center = [
+                    origin[0] + (segment.from[0] + segment.to[0]) * 0.5,
+                    origin[1] + (segment.from[1] + segment.to[1]) * 0.5,
+                ];
+                let bounds = Bounds {
+                    x: center[0] - (length + segment.width) * 0.5,
+                    y: center[1] - segment.width * 0.5,
+                    width: length + segment.width,
+                    height: segment.width,
+                };
+                (
+                    bounds,
+                    clip,
+                    segment.color,
+                    segment.width * 0.5,
+                    None,
+                    0.0,
+                    rotation,
+                )
+            }
+        };
+        let clip = physical_clip(clip, scale, width, height);
+        if bounds.width <= 0.0 || bounds.height <= 0.0 || clip.2 == 0 || clip.3 == 0 {
+            continue;
+        }
+        let half_size = [bounds.width * 0.5, bounds.height * 0.5];
+        let limit = half_size[0].min(half_size[1]);
+        let border_width = border.map_or(0.0, |border| border.width.min(limit));
+        let margin = blur + 1.0 / scale;
+        let start = vertices.len() as u32;
+        for corner in [
+            [-1.0, -1.0],
+            [-1.0, 1.0],
+            [1.0, -1.0],
+            [1.0, -1.0],
+            [-1.0, 1.0],
+            [1.0, 1.0],
+        ] {
+            let local = [
+                corner[0] * (half_size[0] + margin),
+                corner[1] * (half_size[1] + margin),
+            ];
+            let position = [
+                bounds.x + half_size[0] + rotation[0] * local[0] - rotation[1] * local[1],
+                bounds.y + half_size[1] + rotation[1] * local[0] + rotation[0] * local[1],
+            ];
+            vertices.push(Vertex {
+                position: [
+                    position[0] * scale / width as f32 * 2.0 - 1.0,
+                    1.0 - position[1] * scale / height as f32 * 2.0,
+                ],
+                local,
+                half_size,
+                color: crate::visual::linear(color),
+                border_color: crate::visual::linear(border.map_or([0.0; 4], |border| border.color)),
+                parameters: [radius.min(limit), border_width, blur, 0.0],
+            });
+        }
+        let end = vertices.len() as u32;
+        if batch
+            && let Some(Draw::Primitives {
+                end: last,
+                clip: previous,
+                ..
+            }) = draws.last_mut()
+            && *previous == clip
+            && *last == start
+        {
+            *last = end;
+            continue;
+        }
+        draws.push(Draw::Primitives { start, end, clip });
+    }
+    (vertices, draws)
+}
+
+struct PreparedText {
+    renderer: TextRenderer,
+    version: u64,
+}
+
+struct VertexStorage {
+    buffer: wgpu::Buffer,
+    capacity: u64,
+    allocations: usize,
+}
+
+impl VertexStorage {
+    fn new(device: &wgpu::Device) -> Self {
+        Self {
+            buffer: Self::allocate(device, 256),
+            capacity: 256,
+            allocations: 1,
+        }
+    }
+
+    fn allocate(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("reusable primitives"),
+            size,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[Vertex]) -> usize {
+        let bytes = bytemuck::cast_slice(vertices);
+        if bytes.is_empty() {
+            return 0;
+        }
+        if bytes.len() as u64 > self.capacity {
+            self.capacity = (bytes.len() as u64).next_power_of_two();
+            self.buffer = Self::allocate(device, self.capacity);
+            self.allocations += 1;
+        }
+        queue.write_buffer(&self.buffer, 0, bytes);
+        bytes.len()
+    }
 }
 
 pub struct Renderer {
@@ -59,9 +258,11 @@ pub struct Renderer {
     atlas: TextAtlas,
     viewport: Viewport,
     swash: SwashCache,
-    texts: BTreeMap<NodeId, TextRenderer>,
+    texts: BTreeMap<NodeId, PreparedText>,
+    vertices: VertexStorage,
     text_high_water: usize,
     prepared_total: usize,
+    text_created: usize,
 }
 
 impl Renderer {
@@ -87,44 +288,22 @@ impl Renderer {
             .iter()
             .copied()
             .find(wgpu::TextureFormat::is_srgb)
-            .unwrap_or(config.format);
+            .ok_or("Chronobreak requires an sRGB surface format")?;
         surface.configure(&device, &config);
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rectangles"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("rect.wgsl").into()),
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("rectangles"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vertex"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4],
-                }],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fragment"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
+        if std::env::var_os("CHRONOBREAK_TRACE").is_some() {
+            eprintln!("surface format={:?} color_mode=Accurate", config.format);
+        }
+        let pipeline = pipeline(&device, config.format);
         let cache = Cache::new(&device);
-        let atlas = TextAtlas::new(&device, &queue, &cache, config.format);
+        let atlas = TextAtlas::with_color_mode(
+            &device,
+            &queue,
+            &cache,
+            config.format,
+            glyphon::ColorMode::Accurate,
+        );
         let viewport = Viewport::new(&device, &cache);
+        let vertices = VertexStorage::new(&device);
         Ok(Self {
             surface,
             device,
@@ -135,8 +314,10 @@ impl Renderer {
             viewport,
             swash: SwashCache::new(),
             texts: BTreeMap::new(),
+            vertices,
             text_high_water: 0,
             prepared_total: 0,
+            text_created: 0,
         })
     }
 
@@ -149,24 +330,12 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    pub fn collect_unmounted(&mut self, scene: &Scene) {
-        self.texts.retain(|id, _| {
-            scene
-                .nodes
-                .get(*id)
-                .is_some_and(|node| node.buffer.is_some())
-        });
+    pub fn collect_unmounted(&mut self, live: &BTreeSet<NodeId>) {
+        retain_text_resources(&mut self.texts, live);
     }
 
-    pub fn draw(&mut self, scene: &mut Scene, scale: f32) -> Result<DrawOutcome> {
-        let paints = scene.display_list();
-        let drawable: BTreeSet<_> = paints
-            .iter()
-            .filter_map(|paint| match paint {
-                Paint::Text(id) if scene.nodes.get(*id).is_some() => Some(*id),
-                _ => None,
-            })
-            .collect();
+    pub fn draw(&mut self, frame_view: Frame<'_>, scale: f32) -> Result<DrawOutcome> {
+        let drawable: BTreeSet<_> = frame_view.texts.keys().copied().collect();
         retain_text_resources(&mut self.texts, &drawable);
         let Some(frame) = acquire_frame(self.surface.get_current_texture(), || {
             self.surface.configure(&self.device, &self.config);
@@ -181,91 +350,77 @@ impl Renderer {
                 height: self.config.height,
             },
         );
-        for index in &drawable {
-            let node = &scene.nodes[*index];
-            if let Some(buffer) = &node.buffer {
-                let (origin, inner_clip) = scene.text_geometry(*index);
-                let clip = physical_clip(inner_clip, scale, self.config.width, self.config.height);
-                self.texts
-                    .entry(*index)
-                    .or_insert_with(|| {
-                        TextRenderer::new(&mut self.atlas, &self.device, Default::default(), None)
-                    })
-                    .prepare(
-                        &self.device,
-                        &self.queue,
-                        &mut scene.fonts,
-                        &mut self.atlas,
-                        &self.viewport,
-                        [TextArea {
-                            buffer,
-                            left: origin.0 * scale,
-                            top: origin.1 * scale,
-                            scale,
-                            bounds: TextBounds {
-                                left: clip.0 as i32,
-                                top: clip.1 as i32,
-                                right: (clip.0 + clip.2) as i32,
-                                bottom: (clip.1 + clip.3) as i32,
-                            },
-                            default_color: glyphon::Color::rgba(
-                                (node.color[0] * 255.0) as u8,
-                                (node.color[1] * 255.0) as u8,
-                                (node.color[2] * 255.0) as u8,
-                                (node.color[3] * 255.0) as u8,
-                            ),
-                            custom_glyphs: &[],
-                        }],
-                        &mut self.swash,
-                    )?;
-                self.prepared_total += 1;
+        let prepare_started = std::time::Instant::now();
+        for (index, resource) in &frame_view.texts {
+            if !self.texts.contains_key(index) {
+                self.text_created += 1;
             }
+            let buffer = resource.buffer;
+            let origin = resource.origin;
+            let inner_clip = resource.clip;
+            let clip = physical_clip(inner_clip, scale, self.config.width, self.config.height);
+            let prepared = self.texts.entry(*index).or_insert_with(|| PreparedText {
+                renderer: TextRenderer::new(
+                    &mut self.atlas,
+                    &self.device,
+                    Default::default(),
+                    None,
+                ),
+                version: 0,
+            });
+            prepared.renderer.prepare(
+                &self.device,
+                &self.queue,
+                frame_view.fonts,
+                &mut self.atlas,
+                &self.viewport,
+                [TextArea {
+                    buffer,
+                    left: origin.0 * scale,
+                    top: origin.1 * scale,
+                    scale,
+                    bounds: TextBounds {
+                        left: clip.0 as i32,
+                        top: clip.1 as i32,
+                        right: (clip.0 + clip.2) as i32,
+                        bottom: (clip.1 + clip.3) as i32,
+                    },
+                    default_color: glyphon::Color::rgba(
+                        (resource.color[0] * 255.0).round() as u8,
+                        (resource.color[1] * 255.0).round() as u8,
+                        (resource.color[2] * 255.0).round() as u8,
+                        (resource.color[3] * 255.0).round() as u8,
+                    ),
+                    custom_glyphs: &[],
+                }],
+                &mut self.swash,
+            )?;
+            self.prepared_total += 1;
+            prepared.version = resource.version;
         }
         self.text_high_water = self.text_high_water.max(self.texts.len());
         if std::env::var_os("CHRONOBREAK_TRACE").is_some() {
-            let buffers = scene
-                .nodes
-                .iter()
-                .filter(|node| node.buffer.is_some())
-                .count();
             eprintln!(
-                "resources {} prepared={} skipped={} text_cache={} text_high_water={} prepared_total={}",
-                scene.stats(),
+                "resources prepared={} skipped={} text_cache={} text_high_water={} prepared_total={} text_created={} prepare_us={}",
                 drawable.len(),
-                buffers - drawable.len(),
+                frame_view.text_buffers - drawable.len(),
                 self.texts.len(),
                 self.text_high_water,
-                self.prepared_total
+                self.prepared_total,
+                self.text_created,
+                prepare_started.elapsed().as_micros()
             );
         }
-        let mut vertices = Vec::new();
-        let width = self.config.width as f32 / scale;
-        let height = self.config.height as f32 / scale;
-        for paint in &paints {
-            if let Paint::Rect { bounds, color, .. } = *paint {
-                let left = bounds.x / width * 2.0 - 1.0;
-                let right = (bounds.x + bounds.width) / width * 2.0 - 1.0;
-                let top = 1.0 - bounds.y / height * 2.0;
-                let bottom = 1.0 - (bounds.y + bounds.height) / height * 2.0;
-                for position in [
-                    [left, top],
-                    [left, bottom],
-                    [right, top],
-                    [right, top],
-                    [left, bottom],
-                    [right, bottom],
-                ] {
-                    vertices.push(Vertex { position, color });
-                }
-            }
-        }
-        let vertex_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("display list rectangles"),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+        let (vertices, draws) = compile(
+            &frame_view.commands,
+            scale,
+            self.config.width,
+            self.config.height,
+            std::env::var_os("CHRONOBREAK_UNBATCHED").is_none(),
+        );
+        let uploaded = self.vertices.upload(&self.device, &self.queue, &vertices);
+        let mut primitive_draws = 0;
+        let mut text_render_calls = 0;
         let view = frame.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
@@ -288,33 +443,50 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            let mut vertex_offset = 0;
-            for paint in paints {
-                match paint {
-                    Paint::Rect { clip, .. } => {
-                        let (x, y, width, height) =
-                            physical_clip(clip, scale, self.config.width, self.config.height);
-                        if width > 0 && height > 0 {
-                            pass.set_scissor_rect(x, y, width, height);
-                            pass.set_pipeline(&self.pipeline);
-                            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                            pass.draw(vertex_offset..vertex_offset + 6, 0..1);
-                        }
-                        vertex_offset += 6;
+            for draw in draws {
+                match draw {
+                    Draw::Primitives {
+                        start,
+                        end,
+                        clip: (x, y, width, height),
+                    } => {
+                        pass.set_scissor_rect(x, y, width, height);
+                        pass.set_pipeline(&self.pipeline);
+                        pass.set_vertex_buffer(0, self.vertices.buffer.slice(..));
+                        pass.draw(start..end, 0..1);
+                        primitive_draws += 1;
                     }
-                    Paint::Text(index) => {
+                    Draw::Text(index) => {
                         pass.set_scissor_rect(0, 0, self.config.width, self.config.height);
                         let Some(text) = self.texts.get(&index) else {
                             eprintln!("Chronobreak skipped stale text resource: {index:?}");
                             continue;
                         };
-                        text.render(&self.atlas, &self.viewport, &mut pass)?;
+                        if frame_view
+                            .texts
+                            .get(&index)
+                            .is_none_or(|resource| resource.version != text.version)
+                        {
+                            return Err("stale text resource version".into());
+                        }
+                        text.renderer
+                            .render(&self.atlas, &self.viewport, &mut pass)?;
+                        text_render_calls += 1;
                     }
                 }
             }
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
+        if std::env::var_os("CHRONOBREAK_TRACE").is_some() {
+            eprintln!(
+                "render primitive_draws={primitive_draws} text_render_calls={text_render_calls} primitives={} upload_bytes={uploaded} upload_calls={} vertex_capacity={} vertex_allocations={}",
+                vertices.len() / 6,
+                usize::from(uploaded > 0),
+                self.vertices.capacity,
+                self.vertices.allocations
+            );
+        }
         self.atlas.trim();
         Ok(DrawOutcome::Presented)
     }
@@ -340,6 +512,93 @@ fn physical_clip(bounds: Bounds, scale: f32, width: u32, height: u32) -> (u32, u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rect(clip: Bounds) -> Paint {
+        Paint::Rect {
+            bounds: Bounds {
+                x: 10.0,
+                y: 10.0,
+                width: 20.0,
+                height: 20.0,
+            },
+            clip,
+            color: [0.5, 0.5, 0.5, 0.5],
+        }
+    }
+
+    #[test]
+    fn batching_only_merges_consecutive_compatible_primitives() {
+        let mut ids = crate::node::Arena::new();
+        let first = ids.insert(());
+        let last = ids.insert(());
+        let clip = Bounds {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        let other = Bounds {
+            width: 50.0,
+            ..clip
+        };
+        let paints = [
+            rect(clip),
+            rect(clip),
+            Paint::Text(first),
+            rect(clip),
+            Paint::Text(last),
+            rect(other),
+            rect(clip),
+        ];
+        let (vertices, draws) = compile(&paints, 1.5, 150, 150, true);
+        assert_eq!(vertices.len(), 30);
+        assert!(
+            matches!(draws.as_slice(), [Draw::Primitives { start: 0, end: 12, .. }, Draw::Text(a), Draw::Primitives { start: 12, end: 18, .. }, Draw::Text(b), Draw::Primitives { start: 18, end: 24, .. }, Draw::Primitives { start: 24, end: 30, .. }] if *a == first && *b == last)
+        );
+        let (unbatched, reference_draws) = compile(&paints, 1.5, 150, 150, false);
+        assert_eq!(
+            bytemuck::cast_slice::<_, u8>(&vertices),
+            bytemuck::cast_slice::<_, u8>(&unbatched)
+        );
+        assert_eq!(reference_draws.len(), 7);
+    }
+
+    #[test]
+    fn contiguous_primitive_plan_has_one_draw_and_clamped_geometry() {
+        let bounds = Bounds {
+            x: 10.0,
+            y: 10.0,
+            width: 40.0,
+            height: 20.0,
+        };
+        let paints = vec![
+            Paint::Shape {
+                bounds,
+                clip: Bounds {
+                    width: 100.0,
+                    height: 100.0,
+                    ..Bounds::default()
+                },
+                color: [0.5; 4],
+                radius: 4096.0,
+                border: Some(crate::Border::new(4096.0, [1.0; 4])),
+                blur: 0.0
+            };
+            32
+        ];
+        for scale in [1.0, 1.5, 2.0] {
+            let (vertices, draws) = compile(&paints, scale, 200, 200, true);
+            assert_eq!(draws.len(), 1);
+            assert_eq!(compile(&paints, scale, 200, 200, false).1.len(), 32);
+            assert_eq!(vertices[0].parameters, [10.0, 10.0, 0.0, 0.0]);
+            assert!(vertices.iter().all(|vertex| {
+                vertex
+                    .position
+                    .iter()
+                    .all(|coordinate| coordinate.is_finite())
+            }));
+        }
+    }
 
     #[test]
     fn temporary_acquisition_errors_request_retry() {

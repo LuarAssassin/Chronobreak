@@ -19,5 +19,7 @@
 - `docs/text-edit-model.md`：M3A 逻辑编辑、Unicode、历史与程序替换合同。
 - `docs/text-input.md`：单行输入、受控同步、剪贴板、闪烁与验证合同。
 - `docs/native-ime.md`：原生组合输入合同、真实引擎复验与候选跟随边界。
+- `docs/visual-primitives.md`：有限视觉、颜色/帧资源合同与真实 surface 复验。
+- `scripts/visual_primitives/`：三 DPI 视觉、合批与有限资源复验。
 - `scripts/native_ime/`：私有 X11/Fcitx5 回归；独立 reader 源见 `examples/ime_clipboard_reader.rs`。
 - `docs/alpha-delivery-status.md`：连续 M3—M7 授权、候选状态与交付门禁。

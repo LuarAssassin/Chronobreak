@@ -355,6 +355,7 @@ impl Scene {
             if node.text.as_ref() == Some(&text) {
                 continue;
             }
+            node.text_version += 1;
             node.buffer.as_mut().unwrap().set_text(
                 &mut self.fonts,
                 &text,
@@ -533,6 +534,7 @@ impl Scene {
         let publish = single_line(&signal.get()) != text;
         let changed = node.text.as_deref() != Some(&text);
         if changed {
+            node.text_version += 1;
             node.buffer.as_mut().unwrap().set_text(
                 &mut self.fonts,
                 &text,
@@ -561,6 +563,7 @@ impl Scene {
             return;
         }
         editor.external(&text);
+        node.text_version += 1;
         node.buffer.as_mut().unwrap().set_text(
             &mut self.fonts,
             &text,
