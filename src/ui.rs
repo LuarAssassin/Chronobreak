@@ -18,6 +18,8 @@ use taffy::{prelude::*, style::AvailableSpace};
 mod input;
 #[path = "scroll.rs"]
 mod scroll;
+#[path = "text_input.rs"]
+mod text_input;
 pub use input::{EventContext, EventKind, EventPhase, KeyInput, UiEvent, WheelInput};
 use input::{Handler, Interaction};
 pub use scroll::{ScrollError, ScrollHandle, ScrollReceipt, ScrollSnapshot};
@@ -28,6 +30,7 @@ struct Update {
     text: Option<Box<dyn Any>>,
     visible: Option<bool>,
     disabled: Option<bool>,
+    readonly: Option<bool>,
 }
 
 type Updates = RefCell<BTreeMap<NodeId, Update>>;
@@ -78,6 +81,9 @@ pub struct Element {
     container: Option<Children>,
     messages: Vec<Box<dyn Route>>,
     scroll: Option<ScrollHandle>,
+    editor: Option<Signal<String>>,
+    readonly: bool,
+    readonly_binding: Option<VisibilityBinding>,
 }
 
 impl Element {
@@ -107,6 +113,9 @@ impl Element {
             container: None,
             messages: Vec::new(),
             scroll: None,
+            editor: None,
+            readonly: false,
+            readonly_binding: None,
         }
     }
 
@@ -115,6 +124,40 @@ impl Element {
             text: Some(text.into()),
             ..Self::column()
         }
+    }
+
+    /// A controlled, single-line field. Native IME is not implemented yet.
+    ///
+    /// ```
+    /// use chronobreak::{Element, Signal};
+    /// let value = Signal::new("你好 👩🏽‍💻".to_owned());
+    /// let field = Element::text_input(&value).readonly(false).disabled(false);
+    /// ```
+    pub fn text_input(value: &Signal<String>) -> Self {
+        let mut element = Self::bound_text(value, |value| text_input::single_line(&value));
+        element.editor = Some(value.clone());
+        element.focusable = Some(true);
+        element.style.min_size.height = length(35.0_f32);
+        element
+    }
+
+    pub fn readonly(mut self, readonly: bool) -> Self {
+        self.readonly = readonly;
+        self
+    }
+
+    pub fn readonly_when(mut self, signal: &Signal<bool>) -> Self {
+        let signal = signal.clone();
+        self.readonly_binding = Some(Box::new(move |index, pending| {
+            let readonly = signal.get();
+            let subscription = signal.subscribe(move |value| {
+                if let Some(pending) = pending.upgrade() {
+                    pending.borrow_mut().entry(index).or_default().readonly = Some(*value);
+                }
+            });
+            (readonly, subscription)
+        }));
+        self
     }
 
     /// Create an initially empty keyed container and its deferred command handle.
@@ -286,6 +329,7 @@ pub(crate) struct Node {
     pub revision: usize,
     container: Option<Children>,
     scroll: Option<scroll::Viewport>,
+    editor: Option<text_input::Editor>,
 }
 
 #[derive(Clone, Copy)]
@@ -319,6 +363,7 @@ pub(crate) struct Scene {
     scroll_commands: Rc<RefCell<VecDeque<scroll::Command>>>,
     focus_reveal: Option<NodeId>,
     pub placements: u64,
+    clipboard: Option<text_input::ClipboardService>,
 }
 
 #[derive(Debug, Default)]
@@ -372,6 +417,7 @@ impl Scene {
             scroll_commands: Rc::default(),
             focus_reveal: None,
             placements: 0,
+            clipboard: None,
         };
         scene.root = Some(scene.mount(element));
         scene
@@ -413,6 +459,7 @@ impl Scene {
             scroll: element
                 .scroll
                 .map(|handle| scroll::Viewport::new(handle, &self.scroll_commands)),
+            editor: None,
         });
         if let Some(scroll) = &self.nodes[index].scroll {
             scroll.attach(index);
@@ -443,6 +490,17 @@ impl Scene {
             subscriptions.push(subscription);
             disabled
         });
+        let readonly = element
+            .readonly_binding
+            .map(|bind| {
+                let (readonly, subscription) = bind(index, Rc::downgrade(&self.pending));
+                subscriptions.push(subscription);
+                readonly
+            })
+            .unwrap_or(element.readonly);
+        let editor = element.editor.map(|signal| {
+            text_input::Editor::new(signal, text.as_deref().unwrap_or_default(), readonly)
+        });
         let mut style = element.style;
         if !visible {
             style.display = Display::None;
@@ -452,7 +510,14 @@ impl Scene {
                 &mut self.fonts,
                 Metrics::new(element.font_size, element.font_size * 1.5),
             );
-            buffer.set_wrap(&mut self.fonts, Wrap::WordOrGlyph);
+            buffer.set_wrap(
+                &mut self.fonts,
+                if editor.is_some() {
+                    Wrap::None
+                } else {
+                    Wrap::WordOrGlyph
+                },
+            );
             buffer.set_text(
                 &mut self.fonts,
                 text,
@@ -470,6 +535,7 @@ impl Scene {
         node.text = text;
         node._subscriptions = subscriptions;
         node.formatter = formatter;
+        node.editor = editor;
         node.visible = visible;
         node.disabled = disabled.unwrap_or(node.disabled);
         node.focusable = element.focusable.unwrap_or(node.click.is_some());
@@ -510,6 +576,7 @@ impl Scene {
             }
         });
         self.sync();
+        self.receive_clipboard();
         if self.routes.iter().any(|(_, route)| route.pending()) {
             self.wake.notify();
         }
@@ -548,6 +615,9 @@ impl Scene {
             if let Some(value) = update.text {
                 self.formats += 1;
                 let text = node.formatter.as_ref().unwrap()(value);
+                if let Some(editor) = &mut node.editor {
+                    editor.external(&text);
+                }
                 if node.text.as_ref() != Some(&text) {
                     node.buffer.as_mut().unwrap().set_text(
                         &mut self.fonts,
@@ -580,6 +650,15 @@ impl Scene {
                 self.present_needed |= parent_visible && node.visible;
                 count += 1;
             }
+            if let Some(readonly) = update.readonly
+                && let Some(editor) = &mut node.editor
+                && editor.readonly != readonly
+            {
+                editor.readonly = readonly;
+                editor.invalidate();
+                self.present_needed = true;
+                count += 1;
+            }
             if changed {
                 count += 1;
                 node.revision += 1;
@@ -599,6 +678,7 @@ impl Scene {
         self.layout(width, height);
         self.commit_scrolls();
         self.reconcile_hover();
+        self.track_text_caret();
         changed
     }
 
@@ -776,6 +856,14 @@ impl Scene {
                     let Some(index) = context else {
                         return Size::ZERO;
                     };
+                    if nodes[*index].editor.is_some() {
+                        return Size {
+                            width: known.width.unwrap_or(120.0),
+                            height: known.height.unwrap_or(
+                                nodes[*index].buffer.as_ref().unwrap().metrics().line_height + 8.0,
+                            ),
+                        };
+                    }
                     let buffer = nodes[*index].buffer.as_mut().unwrap();
                     let width = known.width.or(match available.width {
                         AvailableSpace::Definite(width) => Some(width),
@@ -833,7 +921,15 @@ impl Scene {
         node.bounds = bounds;
         node.clip = bounds.intersect(clip);
         if shape && let Some(buffer) = &mut node.buffer {
-            buffer.set_size(&mut self.fonts, Some(bounds.width), None);
+            buffer.set_size(
+                &mut self.fonts,
+                if node.editor.is_some() {
+                    None
+                } else {
+                    Some(bounds.width)
+                },
+                None,
+            );
             buffer.shape_until_scroll(&mut self.fonts, false);
         }
         let clip = node.clip;
@@ -862,7 +958,9 @@ impl Scene {
             });
         }
         if node.buffer.is_some() {
+            self.paint_text_selection(index, paints);
             paints.push(Paint::Text(index));
+            self.paint_text_caret(index, paints);
         }
         for child in &node.children {
             self.paint(*child, paints);

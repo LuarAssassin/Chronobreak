@@ -1,6 +1,6 @@
 # M2a 输入路由、焦点与捕获
 
-2026-11-13 的独立切片，原分支 `feat/input-routing`，工作树 `.worktrees/input-routing`，基线 `main@13b5be5aadba3b1ab89ee02745541100859a32e0`；现已通过 PR #9 合入。M1a/M1b/M1c 已分别合入 PR #6/#7/#8，不表示整个 M2 已完成。本文保留 M2a 原始验收证据；后续 M2b 初始纵向滚轮/offset/`scroll_into_view` 候选及 `EventKind` 迁移见 [纵向视口](scroll-views.md)，待审查。M3 编辑/IME 未实现。
+2026-11-13 的独立切片，原分支 `feat/input-routing`，工作树 `.worktrees/input-routing`，基线 `main@13b5be5aadba3b1ab89ee02745541100859a32e0`；现已通过 PR #9 合入。本文保留 M2a 原始验收证据；已合入 M2b 初始纵向视口及 `EventKind` 迁移见 [纵向视口](scroll-views.md)。M3B 编辑适配与按键载荷迁移见 [单行输入](text-input.md)，原生 IME 留 M3C；当前状态以 [Alpha 状态](alpha-delivery-status.md) 为准。
 
 ## 公共入口
 
@@ -24,7 +24,7 @@ let focus_only = Element::text("仅焦点区域").focusable(true).disabled(false
 - `.on_event(phase, Fn(&UiEvent, &mut EventContext))` 可多次注册，同节点同阶段按注册顺序调用。闭包可更新 Signal、排队 Children 命令，不得到 Scene、Renderer 或 arena 可变引用。
 - `UiEvent.kind` 为指针 down/move/up/enter/leave/cancel、CaptureLost 或 `Key(KeyInput)`；`position` 是逻辑窗口坐标 `Option<(f32, f32)>`，未知则为 `None`，不编造离窗坐标。键盘目标不由此坐标决定。
 - `EventContext` 提供 `target/current_target/phase`、独立 `stop_propagation()/prevent_default()` 及查询、`capture_pointer()/release_pointer()/focus()`。捕获与焦点请求在路由后应用；同一路由后请求覆盖前请求。显式请求不是默认动作，`prevent_default` 不撤销它们。M2b 更新：有效显式 focus 请求优先于随后指针默认聚焦，不必为保留焦点而阻止默认点击；指针默认聚焦不自动滚动，键盘/显式焦点转移仍揭示，详见 [纵向视口](scroll-views.md)。
-- `KeyInput` 保留 winit 的 logical/physical key、location、state、repeat、synthetic；修饰键在 `UiEvent.modifiers`。根导出 `keyboard`、`ElementState`、`MouseButton`，不把所有键伪装为文本。应用消费没有另设含糊的布尔返回值，传播与默认行为互不混用。
+- `KeyInput` 保留 winit 的 logical/physical key、`text: Option<String>`、location、state、repeat、synthetic；修饰键在 `UiEvent.modifiers`。Alpha 迁移：手写 fixture 必须显式填 `text`，无文本填 `None`，打印文字填真实载荷；不能用 logical key 猜字。根导出 `keyboard`、`ElementState`、`MouseButton`，传播与默认行为互不混用。
 - `.disabled_when(&Signal<bool>)` 挂载读取最新值，后续按属性最终值提交；优先于静态 `.disabled(bool)`。父禁用排除整个后代的输入/Tab，保持布局与绘制；禁用区域不透明穿透到可点击祖先。
 
 ## 路由与默认动作
@@ -42,7 +42,7 @@ let focus_only = Element::text("仅焦点区域").focusable(true).disabled(false
 | Enter 按下 | 仅激活 focused 控件自身的 on_click，不逐级激活可点击祖先 |
 | Space 按下/松开 | 按下绑定 focused 完整身份及物理键；匹配松开且仍为同一焦点才激活一次。转移焦点（包括转走后回来）、失效或 preedit 开始即取消 |
 
-Enter/Space/Tab 默认动作忽略 OS repeat、重复物理按下与 synthetic 事件；Ctrl/Alt/Super 修饰组合不执行这些默认动作。路由监听器仍可看到重复键并自行定义快捷键重复策略。Space 松开被 prevent 也会清掉待激活项。默认激活和路由位于同一框架 batch；结构/可见性/禁用写入到正式提交才改变遍历树，不能靠排队隐藏或删除阻止本次尚未执行的默认动作，应显式 `prevent_default()`。
+按钮 Enter/Space 与 Tab 默认动作仍忽略 OS repeat、重复物理按下及 synthetic；Ctrl/Alt/Super 不触发按钮。M3B TextInput 在按钮去重之前消费有效重复编辑键，Space 使用真实 `text` 插入，Enter 不插换行，Tab 交回焦点遍历。路由监听器仍看到重复键，`prevent_default()` 阻止编辑。Space 松开被 prevent 也清掉待激活项。默认激活和路由位于同一框架 batch；结构/可见性/禁用写入到正式提交才改变遍历树，应显式 `prevent_default()` 阻止本次默认动作。
 
 `on_click` 继续是无参 `Fn()`，鼠标与键盘复用此唯一默认激活入口；不再把它当路由监听器，也不把返回值当 redraw 请求。嵌套可点击控件只激活最近一个，不同时激活祖先。自定义监听器若自行执行业务激活，应 prevent 对应默认动作，避免应用自己产生双计数。
 

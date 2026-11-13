@@ -24,6 +24,7 @@ fn key(logical: NamedKey, down: bool) -> KeyInput {
     };
     KeyInput {
         logical_key: Key::Named(logical),
+        text: None,
         physical_key: PhysicalKey::Code(physical),
         location: KeyLocation::Standard,
         state: if down {
@@ -514,6 +515,7 @@ fn payload_preserves_logical_physical_location_modifiers_repeat_and_synthetic() 
     scene.modifiers(ModifiersState::CONTROL | ModifiersState::SHIFT);
     let input = KeyInput {
         logical_key: Key::Character("κ".into()),
+        text: Some("Κ".into()),
         physical_key: PhysicalKey::Code(KeyCode::KeyK),
         location: KeyLocation::Left,
         state: ElementState::Pressed,

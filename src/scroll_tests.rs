@@ -27,6 +27,7 @@ fn tab(scene: &mut Scene, reverse: bool) {
     });
     let input = KeyInput {
         logical_key: Key::Named(NamedKey::Tab),
+        text: None,
         physical_key: PhysicalKey::Code(KeyCode::Tab),
         location: KeyLocation::Standard,
         state: ElementState::Pressed,
@@ -515,6 +516,7 @@ fn explicit_keyboard_event_focus_still_reveals_after_pointer_default_focus() {
     assert_eq!(handle.snapshot().offset, 0.0);
     scene.keyboard(KeyInput {
         logical_key: Key::Named(NamedKey::F1),
+        text: None,
         physical_key: PhysicalKey::Code(KeyCode::F1),
         location: KeyLocation::Standard,
         state: ElementState::Pressed,
@@ -922,6 +924,7 @@ fn focus_reveal_waits_for_commit_and_prevented_tab_does_not_reveal() {
     prevent.update(|value| *value = false);
     scene.keyboard(KeyInput {
         logical_key: Key::Named(NamedKey::Tab),
+        text: None,
         physical_key: PhysicalKey::Code(KeyCode::Tab),
         location: KeyLocation::Standard,
         state: ElementState::Pressed,

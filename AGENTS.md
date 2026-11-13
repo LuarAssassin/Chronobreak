@@ -17,4 +17,5 @@
 - `docs/input-routing.md`：M2a 路由、焦点、捕获、默认激活与验收。
 - `docs/scroll-views.md`：M2b 已合入纵向视口、滚轮链、焦点揭示与验收。
 - `docs/text-edit-model.md`：M3A 逻辑编辑、Unicode、历史与程序替换合同。
+- `docs/text-input.md`：单行输入、受控同步、剪贴板、闪烁与验证合同。
 - `docs/alpha-delivery-status.md`：连续 M3—M7 授权、候选状态与交付门禁。
