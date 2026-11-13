@@ -25,20 +25,24 @@ Chronobreak 是用 Rust 构建的保留模式、自绘 GUI 框架，不是对现
 
 - `src/node.rs`：框架 `NodeId = scene owner + slot + generation`，free-list 复用槽位；代际耗尽退役槽位，scene 身份耗尽明确终止，不环绕复活。taffy ID 仅存在私有节点映射与布局树中，不是应用身份。
 - `src/ui.rs`、`src/children.rs`：builder 挂载与 UI 提交队列管理动态树；节点维护父子链接，容器内 key 唯一。`insert/remove/move_before/reorder` 在提交边界验证身份、代际与直接父级；只支持同容器重排，不提供可形成环的跨容器 reparent。文本 buffer 同时用于布局测量和 glyphon 绘制，宽度约束使用 `WordOrGlyph`。
-- `src/signal.rs`：UI 线程 `Rc<RefCell<_>>` 状态；更新在释放借用后通知订阅，值未变化不通知。不承诺跨线程或可重入写入的事务语义。节点持有 RAII 订阅，整棵树销毁时解绑，订阅闭包仅弱引用待更新队列，不延长树寿命。
+- `src/signal.rs`：UI 线程 `Rc<RefCell<_>>` 状态；变化递增版本，由线程局部弱引用 FIFO 非递归通知。普通更新结束即 drain，`batch` 嵌套到最外层结束；同 Signal 合并最终值，新版本放弃旧版本余下回调。1024 因果通知任务预算超限明确 panic，不把大量独立更新误判为循环。没有回滚、跨线程状态或 effect 图。
 - `Element::bound_text(&Signal<T>, Fn(T) -> String)` 支持 `Clone + PartialEq + 'static` 状态与可捕获环境的闭包。私有类型擦除把最新原始值排队，格式化闭包归节点所有，不放进 Signal 监听器；即使格式化闭包捕获源 Signal，也不形成 Signal → 监听器 → Signal 强引用环。初始化在挂载时读取最新值，之后同帧多次更新按节点、属性合并，格式化只处理最终文本值。`Scene::sync` 修改绑定节点并标记 taffy 脏路径，不重建 UI 树。
-- `Element::visible(&Signal<bool>)` 使用 taffy `Display::None`，隐藏父节点排除整棵后代的布局空间、显示列表与命中，保留状态、节点和订阅；隐藏更新取消按压。卸载则递归移除 arena/taffy/父子链接、key、订阅、格式化/点击闭包、buffer、pending、按压与失效命令负载。已复制的监听器仍可能迟到入队，消费时以完整 NodeId 丢弃，不能更新复用槽位。暂不做自动依赖追踪、全树 diff 或跨 Signal 事务。
+- `Element::visible(&Signal<bool>)` 使用 taffy `Display::None`，隐藏父节点排除整棵后代的布局空间、显示列表与命中，保留状态、节点和订阅；取消被隐藏子树内的按压，不误取消其他按钮。卸载递归移除 arena/taffy/父子链接、key、订阅、格式化/点击闭包、buffer、pending、按压与失效命令负载。取消订阅阻止尚未开始的通知，pending 消费仍校验完整 NodeId，防止历史负载命中复用槽位。
 - `src/render.rs`：显示列表保持背景/文本交错画家顺序，`Paint::Text(NodeId)` 为可失效进程内引用；Renderer 的可删除 `BTreeMap<NodeId, TextRenderer>` 仅保留本帧可绘制文字，隐藏/完全裁剪节点不 prepare 并逐帧清退缓存。CPU buffer/局部状态仍保留，恢复时重建对应 renderer。真实资源在途引用由 wgpu 管理，不手工复用。显示列表仍借用 Scene 的 buffer，不声称完整 IR 已序列化、脱离 Scene 或支持多后端；每次仍为全帧绘制。
 - `src/application.rs`：`Application::new(root).title(...).run()` 统一拥有窗口、事件循环、Scene、Renderer 和重绘调度，无业务专用状态。布局和命中使用逻辑像素；窗口尺寸、指针输入、surface、scissor 使用物理像素，通过窗口 scale factor 转换。零尺寸不渲染，恢复与 DPI 变化重新布局；surface 临时故障有节奏地等待 100ms 重试，成功后回到 `ControlFlow::Wait`，不忙循环。UI 点击回调后框架请求重绘并同步绑定，无需示例手写同步；尚无外部事件／跨线程唤醒器。
-- `examples/counter.rs`、`examples/state_panel.rs`、`examples/node_lifecycle.rs`：全部业务状态、界面构造和回调，共用唯一窗口事件循环；动态行局部 Signal 归子树闭包拥有，重排不重建，卸载不保留。
+- `examples/counter.rs`、`examples/state_panel.rs`、`examples/node_lifecycle.rs`、`examples/batched_updates.rs`：业务状态、界面构造和回调共用唯一窗口事件循环；最后一个演示重入、批合并与重排后的命中，不新增公开调试 API。
 
 ## 同步与生命周期
 
-Signal 在 UI 线程同步通知订阅；修改值的闭包执行期间仍持有可变借用，不能在其中再次读取或写入同一 Signal。订阅回调在释放借用后调用，可以读取状态；不保证递归写入的通知顺序或事务一致性（一次通知先复制监听器列表，取消订阅不撤回已复制的通知）。格式化闭包在挂载／帧同步时运行，应只格式化，不承担状态写入或副作用。捕获其他 Signal 不构成自动依赖。
+Signal 修改值的闭包仍持有可变借用，不能在其中直接或间接再次读写同一 Signal。监听器释放借用后按注册 token 顺序执行；每次 dispatch 快照值、版本及 token，逐个检查版本与是否仍订阅。A 收到 1 写 2 时，B 不再接收旧 1；队尾新 dispatch 给 B 最新 2。新增订阅不加入当前快照，取消不能中止已开始的回调。批内 get 立即读到写入值；批末只通知最新值（包括有变化后回到起点），格式化仍延迟到 Scene 提交。
 
 订阅取消通过弱引用，不延长 Signal 生命周期；框架监听器仅弱引用待更新队列，节点持有格式化闭包与所有订阅。应用自己调用 `Signal::subscribe` 时应避免把源 Signal 强引用捕获进监听器，或确保外部 Subscription 按时释放。没有跨线程事务或完整 effect 系统。
 
-结构命令在输入回调之后的 `about_to_wait`、redraw 或下一输入入口提交，绝不在回调遍历栈中直接修改树；每次取出有限快照，结构操作先于绑定更新，格式化期间新入队命令留至下一边界。提交拒绝逐命令生效，不提供跨命令回滚。输入入口若消费变化，会先按最近 viewport 重新布局再命中；`about_to_wait` 的提交亦先布局再请求呈现。这仅修复 M1a 接入的局部几何一致性，不是 M1b 的带版本呈现快照/重入通知/完整脏域合同。Signal 重入顺序仍未解决；外部消息唤醒、焦点/IME 均留后续。
+私有 `Scene::flush(width, height)` 连接有限结构命令快照、节点/属性最终值、格式化、structure/text_measurement/visibility/viewport 脏原因、必要布局和呈现意图。文字/可见性实际相同、无效命令、同序重排不产生可见提交；隐藏子树的文字/结构更新保留最新内容，恢复时才布局呈现。结构命令先于属性，格式化闭包归节点；只应格式化，不承担业务写入（示例日志仅作验证）。新入队结构命令留下一边界，不提供事务回滚。
+
+`commit_version` 是 Scene 内容提交或逻辑 viewport 改变后的单调序号，不是 Signal 版本或帧数；`geometry_version` 表示当前 bounds/clip 已包含的提交。无几何影响时复用 bounds 并推进版本，有几何影响先完成布局再推进。`about_to_wait`、redraw、尺寸/DPI 更新和每次鼠标按下/松开都使用同一提交边界；鼠标入口先读取当前窗口尺寸/scale，再命中最新已提交几何，不混用新属性和旧 bounds。允许该版本先于上次实际显示版本，不维持旧画面树。
+
+呈现意图保持到成功 present；应用只合并请求 redraw，不因点击返回值或无变化 flush 连续请求帧。临时 surface 错误保留意图并等待 100ms，重试提交期间最新值，成功回到 Wait。仍为全帧 GPU 绘制，不声称 GPU 局部重绘。完整合同与准确证据见 [M1b 验收](batched-updates.md)。M1b 为候选；M1c 外部消息/EventLoopProxy、焦点/IME、主题和 LLM 产品未实施。
 
 ## 参考来源
 

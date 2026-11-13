@@ -7,6 +7,7 @@
 - [最小 GUI 验证](minimal-gui.md)：运行方式、交互复验与图形证据。
 - [可复用核心验证](reusable-core.md)：库入口、泛型绑定、显示开关与双计数器验收。
 - [M1a 节点生命周期](node-lifecycle.md)：代际身份、keyed 命令、资源回收与真实图形验收。
+- [M1b 批处理与提交](batched-updates.md)：重入通知、批边界、传播诊断及输入几何验收。
 - [协作与分支](../CONTRIBUTING.md)：分支、agent 隔离、验证与合并约定。
 
 ## 外部参考

@@ -12,3 +12,4 @@
 - `examples/`：基础面板与动态树示例。
 - `docs/reusable-core.md`：可复用核心验收与证据。
 - `docs/node-lifecycle.md`：M1a 动态树、卸载与文字资源验收。
+- `docs/batched-updates.md`：M1b 通知、批处理、提交与几何快照合同。

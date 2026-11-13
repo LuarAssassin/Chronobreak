@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-提供可复用的 `Application` 库入口，业务界面位于 `examples/`。原生 builder 构建保留 UI 树，`Signal<T>` 绑定文字，`Signal<bool>` 控制保留节点显示；M1a 增加场景隔离的代际 `NodeId`、keyed 动态子树命令和卸载清理。taffy 负责 Flexbox，cosmic-text / glyphon 负责真实文本测量与绘制，wgpu / winit 负责自绘与窗口事件。当前仍是早期框架，不是完整控件库；M1b/M1c 未交付。
+提供可复用的 `Application` 库入口，业务界面位于 `examples/`。原生 builder 构建保留 UI 树，`Signal<T>` 绑定文字，`Signal<bool>` 控制保留节点显示；M1a 增加场景隔离的代际 `NodeId`、keyed 动态子树命令和卸载清理。M1b 候选增加非递归通知、显式 `batch`、有界传播与输入前统一提交/必要布局。taffy 负责 Flexbox，cosmic-text / glyphon 负责真实文本测量与绘制，wgpu / winit 负责自绘与窗口事件。当前仍是早期框架，不是完整控件库；M1c 与后续里程碑未实施。
 
 ## 运行与验证
 
@@ -18,11 +18,12 @@ sudo apt-get install --no-install-recommends -y build-essential pkg-config libx1
 cargo run --example counter --locked
 cargo run --example state_panel --locked
 cargo run --example node_lifecycle --locked
+cargo run --example batched_updates --locked
 ```
 
 需要可访问的 X11 或 Wayland 会话；无独立 GPU 时可以使用 Mesa 的 Vulkan 软件适配器。中文依赖系统 CJK 字体回退；不内嵌或重新分发字体。依赖版本以提交的 `Cargo.lock` 为准，glyphon 0.9 与 wgpu 25 / cosmic-text 0.14 配套使用。
 
-`counter` 提供简单计数卡片；`state_panel` 提供两个独立计数器、可变中文说明及计数器 B 的显示开关。隐藏不占布局空间、不绘制、不参与命中，恢复不重置计数。面板采用竖排，缩窄窗口时中文自动换行；过小窗口裁剪，不提供滚动。按下和松开必须命中同一个按钮才触发。失焦、指针离开、窗口尺寸变化或隐藏节点取消当前按压。关闭窗口退出。
+`counter` 提供简单计数卡片；`state_panel` 提供两个独立计数器、可变中文说明及计数器 B 的显示开关。隐藏不占布局空间、不绘制、不参与命中，恢复不重置计数。面板采用竖排，缩窄窗口时中文自动换行；过小窗口裁剪，不提供滚动。按下和松开必须命中同一个按钮才触发。失焦、指针离开、窗口尺寸变化，或按压节点被卸载/祖先隐藏，取消当前按压；隐藏无关节点不取消按压。关闭窗口退出。
 
 ```rust,no_run
 use chronobreak::{Application, Element, Result, Signal};
@@ -36,6 +37,26 @@ fn main() -> Result<()> {
 ```
 
 绑定使用显式依赖，无宏或自动依赖追踪；格式化闭包可捕获环境，其他捕获 Signal 不会自动成为依赖。UI 点击回调修改绑定状态或提交结构命令后，框架负责同步、布局与重绘；应用无需访问 Renderer / Scene 或窗口事件循环。没有跨线程唤醒器、全树 diff 或完整通知事务。
+
+### 显式批处理
+
+```rust
+use chronobreak::{Signal, batch};
+
+let count = Signal::new(0);
+let result = batch(|| {
+    count.update(|value| *value = 1);
+    batch(|| count.update(|value| *value = 2));
+    count.get()
+});
+assert_eq!(result, 2);
+```
+
+批内模型立即可读，通知在最外层结束时按首次入队 FIFO 合并；普通 `update` 仍即用，不要求手动 flush。监听器内写入排队而非递归调用；新版本终止旧版本尚未开始的回调，A 收到 1 写 2、后注册绑定 B 的最终值不会退回 1。`update` 的写入闭包内仍不能读写同一 Signal。批内 `0→1→0` 通知一次最终 0，但最终格式化文字相同不会重排或请求重绘。
+
+单条因果传播最多执行 1024 个通知任务，超限明确 panic（传播预算超限，不证明有环），清理待通知队列而不回滚模型；监听器/批闭包 panic 同样不能当成成功提交。独立 Signal 的大批更新不共用这个计数。取消订阅会阻止尚未开始的回调；通知中新增订阅从下一次 dispatch 开始参与。
+
+`batched_updates` 通过真实按钮展示最终 2、三次写入只格式化/提交一次，以及文字换行/插入后目标按钮的新命中位置。布局脏原因与呈现意图独立于全帧 GPU 绘制；输入前先提交并完成必要布局，不维持第二套旧画面树。完整合同、迁移与分层证据见 [M1b 验收](docs/batched-updates.md)。UI 线程外消息唤醒仍属 M1c，不能声称休眠事件循环会被外部模型修改自动唤醒。
 
 ### 动态 children
 

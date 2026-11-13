@@ -24,5 +24,5 @@ pub use application::Application;
 pub use children::{Children, CommandReceipt, TreeError};
 pub use node::NodeId;
 pub use render::Result;
-pub use signal::Signal;
+pub use signal::{Signal, batch};
 pub use ui::Element;
