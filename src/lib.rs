@@ -19,6 +19,7 @@ mod messages;
 mod node;
 mod render;
 pub mod signal;
+pub mod text_edit;
 pub mod ui;
 
 pub use application::Application;
@@ -29,6 +30,7 @@ pub use messages::{
 pub use node::NodeId;
 pub use render::Result;
 pub use signal::{Signal, batch};
+pub use text_edit::{Direction, EditUnit, HistoryLimits, HistoryStats, Selection, TextEditModel};
 pub use ui::{
     Element, EventContext, EventKind, EventPhase, KeyInput, ScrollError, ScrollHandle,
     ScrollReceipt, ScrollSnapshot, UiEvent, WheelInput,

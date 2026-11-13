@@ -25,8 +25,9 @@ Chronobreak 是用 Rust 构建的保留模式、自绘 GUI 框架，不是对现
 
 - `src/node.rs`：框架 `NodeId = scene owner + slot + generation`，free-list 复用槽位；代际耗尽退役槽位，scene 身份耗尽明确终止，不环绕复活。taffy ID 仅存在私有节点映射与布局树中，不是应用身份。
 - `src/ui.rs`、`src/children.rs`：builder 挂载与 UI 提交队列管理动态树；节点维护父子链接，容器内 key 唯一。`insert/remove/move_before/reorder` 在提交边界验证身份、代际与直接父级；只支持同容器重排，不提供可形成环的跨容器 reparent。文本 buffer 同时用于布局测量和 glyphon 绘制，宽度约束使用 `WordOrGlyph`。
-- `src/input.rs`：已合入 M2a 的类型化事件/上下文与 Scene 内交互状态，M2b 候选增加 Wheel。最深命中节点的真实祖先路径按 capture→target→bubble 访问；独立传播/默认标志，最后执行唯一控件默认动作。hover、pressed、capture、focus、Space 身份均使用完整 NodeId；回调无 arena 可变引用，仍由正式提交统一失效。行为与迁移见 [输入路由](input-routing.md)。
-- `src/scroll.rs`：M2b 初始纵向视口候选；固定高度 wrapper、UI 句柄、最终测量后 clamp、剩余量链与一次性焦点揭示。
+- `src/input.rs`：已合入 M2a 的类型化事件/上下文与 Scene 内交互状态，已合入 M2b 增加 Wheel。最深命中节点的真实祖先路径按 capture→target→bubble 访问；独立传播/默认标志，最后执行唯一控件默认动作。hover、pressed、capture、focus、Space 身份均使用完整 NodeId；回调无 arena 可变引用，仍由正式提交统一失效。行为与迁移见 [输入路由](input-routing.md)。
+- `src/scroll.rs`：M2b 初始纵向视口已合入 PR #10；固定高度 wrapper、UI 句柄、最终测量后 clamp、剩余量链与一次性焦点揭示。
+- `src/text_edit.rs`：M3A:B1 逻辑模型候选；UTF-8 String 与库提供的 UAX #29 字符簇/词边界，公开定向 selection、显式嵌套分组、有界快照历史与程序替换。独立于 Signal/布局/输入路由，不暴露 Scene/Renderer；后续适配器负责视觉 hit/affinity、TextInput、双向值与原生 IME。见 [模型合同](text-edit-model.md)。
 - `src/signal.rs`：UI 线程 `Rc<RefCell<_>>` 状态；变化递增版本，由线程局部弱引用 FIFO 非递归通知。普通更新结束即 drain，`batch` 嵌套到最外层结束；同 Signal 合并最终值，新版本放弃旧版本余下回调。1024 因果通知任务预算超限明确 panic，不把大量独立更新误判为循环。没有回滚、跨线程状态或 effect 图。
 - `Element::bound_text(&Signal<T>, Fn(T) -> String)` 支持 `Clone + PartialEq + 'static` 状态与可捕获环境的闭包。私有类型擦除把最新原始值排队，格式化闭包归节点所有，不放进 Signal 监听器；即使格式化闭包捕获源 Signal，也不形成 Signal → 监听器 → Signal 强引用环。初始化在挂载时读取最新值，之后同帧多次更新按节点、属性合并，格式化只处理最终文本值。`Scene::sync` 修改绑定节点并标记 taffy 脏路径，不重建 UI 树。
 - `Element::visible(&Signal<bool>)` 使用 taffy `Display::None`，隐藏父节点排除整棵后代的布局空间、显示列表与命中，保留状态、节点和订阅；取消被隐藏子树内的按压，不误取消其他按钮。卸载递归移除 arena/taffy/父子链接、key、订阅、格式化/点击闭包、buffer、pending、按压与失效命令负载。取消订阅阻止尚未开始的通知，pending 消费仍校验完整 NodeId，防止历史负载命中复用槽位。
@@ -51,7 +52,7 @@ M1c 的 user_event 仅标记消息已就绪；每个 `about_to_wait` 最多轮�
 
 M2a 已合入 PR #9：在窗口输入前复用同一 flush/逻辑几何快照；鼠标移动/各按钮、键盘及修饰键接入原循环，DPI 变化重投影已有物理指针。单个路由及默认动作在 M1b batch 内完成，事件末由原调度合并呈现。仅 hover/focus 变化不标记文字测量脏；边框使用四条裁剪内矩形，未修改 Renderer 或引入主题样式层。失焦/暂停清理交互，尺寸/DPI 变化保留原按压取消规则；有效捕获允许控件外路由，但不调用桌面 cursor grab/confine。仅收到非空 preedit 时暂缓路由快捷键并撤销 Space 待激活，不是 IME 支持。
 
-M2b 当前为**初始纵向滚动候选，待审查**。`Element::scroll_view(height, content)` 建立固定逻辑高度的专用 wrapper，单独内容子树参与完整测量；`src/scroll.rs` 管理 UI 线程句柄、有限命令快照、extent/clamp、最近边缘揭示和只读比例指示条。extent 取未平移 taffy 布局，绘制几何在 placement 中减去累计祖先 offset，逐层求 clip 交集；文字位置、绘制顺序、命中、焦点框和捕获共用这份窗口逻辑几何。纯 offset 更新只 placement，不重跑 taffy 或文字整形；可见文字准备仍由原 display list 控制，不卸载或虚拟化裁剪内容。
+M2b 初始纵向滚动已合入 **PR #10**。`Element::scroll_view(height, content)` 建立固定逻辑高度的专用 wrapper，单独内容子树参与完整测量；`src/scroll.rs` 管理 UI 线程句柄、有限命令快照、extent/clamp、最近边缘揭示和只读比例指示条。extent 取未平移 taffy 布局，绘制几何在 placement 中减去累计祖先 offset，逐层求 clip 交集；文字位置、绘制顺序、命中、焦点框和捕获共用这份窗口逻辑几何。纯 offset 更新只 placement，不重跑 taffy 或文字整形；可见文字准备仍由原 display list 控制，不卸载或虚拟化裁剪内容。
 
 flush 先提交结构/属性并测量、clamp，再执行排队滚动与一次性焦点揭示，刷新 placement，最后对静止指针重算 hover。新焦点只排队揭示，不在 Tab 遍历中变更几何，不因旧焦点每次 flush 抢回手动滚动。滚轮走实际指针命中路径而非捕获 owner；先完成普通路由，未 prevent 时独立执行由内到外的剩余量链，stop 不改变默认链。geometry_version 包含滚动提交，无变化不请求帧。100ms surface Retry、零尺寸/遮挡/Wait 与 M1c 公平调度不变。完整 API/有限可见性政策见 [纵向视口](scroll-views.md)。横向、虚拟化、惯性/平滑/触控、M3 编辑/IME、主题、任务运行时和 LLM 产品不在此切片。
 

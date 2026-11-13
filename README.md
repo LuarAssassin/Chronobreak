@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-提供可复用的 `Application` 库入口，业务界面位于 `examples/`。M1a/M1b/M1c 已分别合入 PR #6/#7/#8，M2a 路由/焦点/捕获/键盘激活已合入 PR #9。本分支增加 **M2b 初始纵向滚动候选，待审查**：固定高度独立视口、滚轮剩余链、clamp 与焦点/显式揭示；不表示整个 M2 完成。横向滚动、虚拟化、惯性/动画/触控、M3 编辑/IME、主题系统与 LLM 产品均未实施。taffy、cosmic-text / glyphon、wgpu / winit 负责布局、文字、自绘与窗口事件；当前不是完整控件库。
+提供可复用的 `Application` 库入口，业务界面位于 `examples/`。M1a/M1b/M1c 已分别合入 PR #6/#7/#8，M2a 已合入 PR #9，M2b 初始纵向视口已合入 **PR #10**。本分支增加 **M3A:B1 纯逻辑文字编辑模型候选，待审查**：字符簇/词移动删除、定向选择、有限撤销与程序替换；不是 TextInput 控件或原生 IME。横向/虚拟化、M3B 绑定/控件与真实 IME、主题系统及 LLM 产品仍未完成。taffy、cosmic-text / glyphon、wgpu / winit 负责布局、文字、自绘与窗口事件；当前不是完整控件库。用户已授权协调者连续推进 M3—M7，后续状态与发布门禁见 [Alpha 交付状态](docs/alpha-delivery-status.md)。
 
 ## 运行与验证
 
@@ -28,6 +28,10 @@ cargo run --example scroll_views --locked
 
 `counter` 提供简单计数卡片；`state_panel` 提供独立计数器、中文说明及显示开关。隐藏不占布局空间、不绘制、不参与命中，恢复不重置计数。缩窄窗口中文自动换行，过小窗口裁剪，不提供滚动。普通按钮按下/松开必须对应同一控件，拖出释放不激活。失焦、尺寸/DPI 变化、已提交隐藏/禁用/卸载取消按压；无捕获时离窗取消，有效控件级捕获不因 `CursorLeft` 丢失。关闭窗口退出。
 
+### 逻辑文字模型（M3A 候选）
+
+`TextEditModel` 提供 `replace_selection`、`move_cursor`、`delete`、定向 selection、嵌套 `edit_group` 与有界 undo/redo。字节偏移拒绝字符簇内部位置；逻辑方向不等于视觉 bidi。程序权威值经 `replace_programmatic` 更新，相同回声完整无操作，不同值清历史并将失效端点向后取整。实际 Signal 适配与 GUI/IME 留后续块；合同和公开 API 示例见 [逻辑文字模型](docs/text-edit-model.md)。`cargo run --example text_model --locked` 是无需桌面的真实 CLI 调用者。
+
 ### 输入交互（M2a，已合入 PR #9）
 
 既有 `.on_click(|| ...)` 保持单次激活回调，现默认成为 Tab 停靠点；`.focusable(false)` 显式退出。新增 `.focusable(true)`、`.disabled(bool)`、`.disabled_when(&Signal<bool>)` 和 `.on_event(EventPhase, handler)`。回调只得到类型化事件与上下文，不持 Scene/Renderer；结构修改仍使用 `Children` 延迟提交。
@@ -47,7 +51,7 @@ fn main() -> Result<()> {
 
 绑定使用显式依赖，无宏或自动依赖追踪；格式化闭包可捕获环境，其他捕获 Signal 不会自动成为依赖。UI 点击或消息回调修改绑定状态、提交结构命令后，框架负责同步、布局与重绘；应用无需访问 Renderer / Scene 或窗口事件循环。没有全树 diff 或完整通知事务。
 
-### 纵向滚动（M2b 候选，待审查）
+### 纵向滚动（M2b，已合入 PR #10）
 
 ```rust,no_run
 use chronobreak::{Application, Element};

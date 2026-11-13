@@ -239,6 +239,7 @@ dependencies = [
  "glyphon",
  "pollster",
  "taffy",
+ "unicode-segmentation",
  "wgpu",
  "winit",
 ]

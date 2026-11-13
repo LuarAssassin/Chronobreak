@@ -1,10 +1,10 @@
-# M2b 初始纵向视口候选
+# M2b 初始纵向视口
 
-2026-11-13，`feat/scroll-views`，独立工作树 `.worktrees/scroll-views`，基线 `main@4e91628d4c2103058623dc0b310442b28118a180`。M1a/M1b/M1c 与 M2a 已分别合入 PR #6/#7/#8/#9；本切片是**初始纵向滚动候选，待独立审查与远端 CI**，不宣告整个 M2 完成。
+2026-11-13，初始纵向滚动已合入 **PR #10**（`bea3c46`）；M1a/M1b/M1c 与 M2a 已分别合入 PR #6/#7/#8/#9。下文保留 `feat/scroll-views`、独立工作树 `.worktrees/scroll-views`、基线 `main@4e91628d4c2103058623dc0b310442b28118a180` 的切片验收记录；候选时期记录不代表当前仍待合并，也不宣告整个 M2 或平台资格完成。
 
 ## 范围与入口
 
-只做固定逻辑高度的纵向 wrapper、独立内容测量、逻辑 offset/clamp、滚轮剩余链、焦点/显式最近边缘揭示与只读比例指示条。**不实现横向、虚拟列表、惯性、平滑动画、触控手势、文本编辑/IME、主题或 LLM 产品**；M3 未实施。不增加依赖，不改变 Rust CI 门禁，不扩展平台支持声明。
+只做固定逻辑高度的纵向 wrapper、独立内容测量、逻辑 offset/clamp、滚轮剩余链、焦点/显式最近边缘揭示与只读比例指示条。**不实现横向、虚拟列表、惯性、平滑动画、触控手势、文本编辑/IME、主题或 LLM 产品**；后续 M3 状态见 [Alpha 交付状态](alpha-delivery-status.md)。本纵向切片不增加依赖，不改变 Rust CI 门禁，不扩展平台支持声明。
 
 ```rust,no_run
 use chronobreak::{Application, Element};
