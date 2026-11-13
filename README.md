@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-提供可复用的 `Application` 库入口，业务界面位于 `examples/`。原生 builder 构建保留 UI 树，`Signal<T>` 绑定文字，`Signal<bool>` 控制保留节点显示；M1a 增加场景隔离的代际 `NodeId`、keyed 动态子树命令和卸载清理。M1b 候选增加非递归通知、显式 `batch`、有界传播与输入前统一提交/必要布局。taffy 负责 Flexbox，cosmic-text / glyphon 负责真实文本测量与绘制，wgpu / winit 负责自绘与窗口事件。当前仍是早期框架，不是完整控件库；M1c 与后续里程碑未实施。
+提供可复用的 `Application` 库入口，业务界面位于 `examples/`。原生 builder 构建保留 UI 树，`Signal<T>` 绑定文字，`Signal<bool>` 控制保留节点显示；M1a 的代际身份/卸载和 M1b 的通知/批处理/统一提交已分别合入 PR #6/#7。M1c 候选增加有界后台消息、节点作用域接收器和 EventLoopProxy 唤醒，待独立审查。taffy、cosmic-text / glyphon、wgpu / winit 负责布局、文字、自绘与窗口事件。当前仍是早期框架，不是完整控件库；M2 及后续里程碑未实施。
 
 ## 运行与验证
 
@@ -19,6 +19,7 @@ cargo run --example counter --locked
 cargo run --example state_panel --locked
 cargo run --example node_lifecycle --locked
 cargo run --example batched_updates --locked
+cargo run --example background_messages --locked
 ```
 
 需要可访问的 X11 或 Wayland 会话；无独立 GPU 时可以使用 Mesa 的 Vulkan 软件适配器。中文依赖系统 CJK 字体回退；不内嵌或重新分发字体。依赖版本以提交的 `Cargo.lock` 为准，glyphon 0.9 与 wgpu 25 / cosmic-text 0.14 配套使用。
@@ -36,7 +37,30 @@ fn main() -> Result<()> {
 }
 ```
 
-绑定使用显式依赖，无宏或自动依赖追踪；格式化闭包可捕获环境，其他捕获 Signal 不会自动成为依赖。UI 点击回调修改绑定状态或提交结构命令后，框架负责同步、布局与重绘；应用无需访问 Renderer / Scene 或窗口事件循环。没有跨线程唤醒器、全树 diff 或完整通知事务。
+绑定使用显式依赖，无宏或自动依赖追踪；格式化闭包可捕获环境，其他捕获 Signal 不会自动成为依赖。UI 点击或消息回调修改绑定状态、提交结构命令后，框架负责同步、布局与重绘；应用无需访问 Renderer / Scene 或窗口事件循环。没有全树 diff 或完整通知事务。
+
+### 后台消息（M1c 候选）
+
+```rust,no_run
+use chronobreak::{Application, Element, Signal, message_channel};
+use std::num::NonZeroUsize;
+
+let value = Signal::new(0);
+let model = value.clone();
+let (sender, receiver) = message_channel(NonZeroUsize::new(8).unwrap());
+let cancel = receiver.cancellation();
+let root = Element::bound_text(&value, |value| format!("后台进度：{value}"))
+    .on_message(receiver, move |value| model.update(|current| *current = value));
+std::thread::spawn(move || {
+    if let Err(error) = sender.try_send(42) { eprintln!("提交失败：{error:?}"); }
+});
+Application::new(root).run().unwrap();
+cancel.close();
+```
+
+`MessageSender<T>` 可跨线程克隆；只有 `T: Send + 'static` 的数据跨线程，Signal、接收器、取消句柄及处理闭包仍归 UI。`try_send` 不等空位，`Full(T)` / `Closed(T)` 归还负载；入队成功不保证取消、已提交卸载或关闭后仍交付。每 UI 轮全场景最多处理 64 条，自动批处理、提交并必要布局；剩余消息重新唤醒，空队列回到 Wait，不轮询。显式 `cancel.close()` 立即关闭，排队 `Children::remove` 则到提交才关闭；隐藏不取消。完整背压、关闭、迁移与实测证据见 [后台消息](docs/background-messages.md)。
+
+`background_messages` 启动真实工作线程，窗口先空闲三秒，再无输入更新中文进度；附新请求/旧结果过滤、取消、移除/恢复、20,001 条有界突发与响应计数。示例工作线程在 Full 时保留负载重试、在 Closed 时合作退出，不提供通用任务运行时，也不在 UI 内 join。
 
 ### 显式批处理
 

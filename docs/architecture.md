@@ -29,8 +29,9 @@ Chronobreak 是用 Rust 构建的保留模式、自绘 GUI 框架，不是对现
 - `Element::bound_text(&Signal<T>, Fn(T) -> String)` 支持 `Clone + PartialEq + 'static` 状态与可捕获环境的闭包。私有类型擦除把最新原始值排队，格式化闭包归节点所有，不放进 Signal 监听器；即使格式化闭包捕获源 Signal，也不形成 Signal → 监听器 → Signal 强引用环。初始化在挂载时读取最新值，之后同帧多次更新按节点、属性合并，格式化只处理最终文本值。`Scene::sync` 修改绑定节点并标记 taffy 脏路径，不重建 UI 树。
 - `Element::visible(&Signal<bool>)` 使用 taffy `Display::None`，隐藏父节点排除整棵后代的布局空间、显示列表与命中，保留状态、节点和订阅；取消被隐藏子树内的按压，不误取消其他按钮。卸载递归移除 arena/taffy/父子链接、key、订阅、格式化/点击闭包、buffer、pending、按压与失效命令负载。取消订阅阻止尚未开始的通知，pending 消费仍校验完整 NodeId，防止历史负载命中复用槽位。
 - `src/render.rs`：显示列表保持背景/文本交错画家顺序，`Paint::Text(NodeId)` 为可失效进程内引用；Renderer 的可删除 `BTreeMap<NodeId, TextRenderer>` 仅保留本帧可绘制文字，隐藏/完全裁剪节点不 prepare 并逐帧清退缓存。CPU buffer/局部状态仍保留，恢复时重建对应 renderer。真实资源在途引用由 wgpu 管理，不手工复用。显示列表仍借用 Scene 的 buffer，不声称完整 IR 已序列化、脱离 Scene 或支持多后端；每次仍为全帧绘制。
-- `src/application.rs`：`Application::new(root).title(...).run()` 统一拥有窗口、事件循环、Scene、Renderer 和重绘调度，无业务专用状态。布局和命中使用逻辑像素；窗口尺寸、指针输入、surface、scissor 使用物理像素，通过窗口 scale factor 转换。零尺寸不渲染，恢复与 DPI 变化重新布局；surface 临时故障有节奏地等待 100ms 重试，成功后回到 `ControlFlow::Wait`，不忙循环。UI 点击回调后框架请求重绘并同步绑定，无需示例手写同步；尚无外部事件／跨线程唤醒器。
-- `examples/counter.rs`、`examples/state_panel.rs`、`examples/node_lifecycle.rs`、`examples/batched_updates.rs`：业务状态、界面构造和回调共用唯一窗口事件循环；最后一个演示重入、批合并与重排后的命中，不新增公开调试 API。
+- `src/application.rs`：`Application::new(root).title(...).run()` 统一拥有窗口、`EventLoop<UserEvent>`、Scene、Renderer 和重绘调度，无业务专用状态。布局和命中使用逻辑像素，输入/surface 使用物理像素；零尺寸、遮挡和暂停不忙重绘，保留呈现意图。surface Retry 沿用 100ms 等待；成功且无新变化时回到 Wait。
+- `src/messages.rs`：`message_channel(NonZeroUsize)` 返回可跨线程的 `MessageSender<T>` 和 UI 专属接收器，`Element::on_message` 将处理闭包绑定完整 NodeId。每 inbox 独立有界，Full/Closed 归还数据；Scene 共用一个合并唤醒状态和无负载 EventLoopProxy 事件，回调/丢弃负载/调用 proxy 前释放锁。发送者只持队列及弱 wake，不持节点/闭包；取消、已提交卸载与关闭断开路由。
+- `examples/`：基础面板、动态树、批处理与后台消息共用唯一窗口事件循环；`background_messages` 用真实 std 线程展示延迟进度、背压、取消及目标替换，不新增公开调试 API。
 
 ## 同步与生命周期
 
@@ -42,7 +43,9 @@ Signal 修改值的闭包仍持有可变借用，不能在其中直接或间接�
 
 `commit_version` 是 Scene 内容提交或逻辑 viewport 改变后的单调序号，不是 Signal 版本或帧数；`geometry_version` 表示当前 bounds/clip 已包含的提交。无几何影响时复用 bounds 并推进版本，有几何影响先完成布局再推进。`about_to_wait`、redraw、尺寸/DPI 更新和每次鼠标按下/松开都使用同一提交边界；鼠标入口先读取当前窗口尺寸/scale，再命中最新已提交几何，不混用新属性和旧 bounds。允许该版本先于上次实际显示版本，不维持旧画面树。
 
-呈现意图保持到成功 present；应用只合并请求 redraw，不因点击返回值或无变化 flush 连续请求帧。临时 surface 错误保留意图并等待 100ms，重试提交期间最新值，成功回到 Wait。仍为全帧 GPU 绘制，不声称 GPU 局部重绘。完整合同与准确证据见 [M1b 验收](batched-updates.md)。M1b 为候选；M1c 外部消息/EventLoopProxy、焦点/IME、主题和 LLM 产品未实施。
+呈现意图保持到成功 present；应用只合并请求 redraw，不因点击返回值或无变化 flush 连续请求帧。临时 surface 错误保留意图并等待 100ms，重试提交期间最新值，成功回到 Wait。仍为全帧 GPU 绘制，不声称 GPU 局部重绘。M1a/M1b 已分别合入 PR #6/#7；历史证据见 [M1b 验收](batched-updates.md)。
+
+M1c 候选的 user_event 仅标记消息已就绪；每个 `about_to_wait` 最多轮转处理全场景 64 条，避免某些平台同一轮继续消费新 proxy 事件导致饥饿。消费前确认唤醒并先提交旧结构命令；消息回调在一个 M1b batch 内执行，批后统一提交，再沿原路径必要布局/呈现。队列仍有消息则重新投递一次 proxy；生产者在确认前发送由已有事件覆盖，确认后发送会投递后继事件，不因消费端末尾检查而丢唤醒。卸载命令在批末提交，同批尚未开始的消息不因排队删除立即失效；需要立即关闭时使用 UI 取消句柄。暂停/遮挡/零尺寸继续接收和有限更新模型，但无轮询或忙重绘；恢复后呈现最新状态。详见 [后台消息合同](background-messages.md)。焦点/IME、主题、任务运行时和 LLM 产品未实施。
 
 ## 参考来源
 

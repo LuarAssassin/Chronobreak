@@ -15,6 +15,7 @@
 
 mod application;
 mod children;
+mod messages;
 mod node;
 mod render;
 pub mod signal;
@@ -22,6 +23,9 @@ pub mod ui;
 
 pub use application::Application;
 pub use children::{Children, CommandReceipt, TreeError};
+pub use messages::{
+    MessageCancellation, MessageReceiver, MessageSender, TrySendError, message_channel,
+};
 pub use node::NodeId;
 pub use render::Result;
 pub use signal::{Signal, batch};

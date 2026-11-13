@@ -1,5 +1,7 @@
 # M1b：通知、批处理与提交边界
 
+> 历史切片记录：M1b 后已通过 PR #7 合入 main；下述候选状态、51+1 测试与验证范围记录当时基线，不代表当前待实现列表。M1c 候选见 [后台消息](background-messages.md)。
+
 2026-11-13（America/Los_Angeles）。`feat/batched-updates` 基于 `main@e2aa129e1b70a4ae5f7344817301ef0910e1c1b8`，仅修改独立 worktree。状态为 **M1b 候选，待独立审查及远端 Rust checks**；不是整个 M1 完成。M1a 的身份、卸载、资源与 1000 轮逻辑生命周期回归保留，本轮不重复真实 1000 轮图形压力。
 
 ## 公开 API 与迁移
