@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-提供可复用的 `Application` 库入口，业务界面位于 `examples/`。原生 builder 构建保留 UI 树，`Signal<T>` 绑定文字，`Signal<bool>` 控制保留节点显示；M1a 的代际身份/卸载和 M1b 的通知/批处理/统一提交已分别合入 PR #6/#7。M1c 候选增加有界后台消息、节点作用域接收器和 EventLoopProxy 唤醒，待独立审查。taffy、cosmic-text / glyphon、wgpu / winit 负责布局、文字、自绘与窗口事件。当前仍是早期框架，不是完整控件库；M2 及后续里程碑未实施。
+提供可复用的 `Application` 库入口，业务界面位于 `examples/`。M1a 代际身份/卸载、M1b 通知/批处理/统一提交、M1c 有界后台消息/UI 唤醒已分别合入 PR #6/#7/#8。本分支仅增加 **M2a 候选**：真实 capture→target→bubble 路由、焦点、指针捕获与键盘激活，待独立审查及远端 CI；不表示整个 M2 完成。M2b 滚动与 `scroll_into_view`、M3 编辑/IME、主题系统仍未实施。taffy、cosmic-text / glyphon、wgpu / winit 负责布局、文字、自绘与窗口事件；当前不是完整控件库。
 
 ## 运行与验证
 
@@ -20,11 +20,18 @@ cargo run --example state_panel --locked
 cargo run --example node_lifecycle --locked
 cargo run --example batched_updates --locked
 cargo run --example background_messages --locked
+cargo run --example input_routing --locked
 ```
 
 需要可访问的 X11 或 Wayland 会话；无独立 GPU 时可以使用 Mesa 的 Vulkan 软件适配器。中文依赖系统 CJK 字体回退；不内嵌或重新分发字体。依赖版本以提交的 `Cargo.lock` 为准，glyphon 0.9 与 wgpu 25 / cosmic-text 0.14 配套使用。
 
-`counter` 提供简单计数卡片；`state_panel` 提供两个独立计数器、可变中文说明及计数器 B 的显示开关。隐藏不占布局空间、不绘制、不参与命中，恢复不重置计数。面板采用竖排，缩窄窗口时中文自动换行；过小窗口裁剪，不提供滚动。按下和松开必须命中同一个按钮才触发。失焦、指针离开、窗口尺寸变化，或按压节点被卸载/祖先隐藏，取消当前按压；隐藏无关节点不取消按压。关闭窗口退出。
+`counter` 提供简单计数卡片；`state_panel` 提供独立计数器、中文说明及显示开关。隐藏不占布局空间、不绘制、不参与命中，恢复不重置计数。缩窄窗口中文自动换行，过小窗口裁剪，不提供滚动。普通按钮按下/松开必须对应同一控件，拖出释放不激活。失焦、尺寸/DPI 变化、已提交隐藏/禁用/卸载取消按压；无捕获时离窗取消，有效控件级捕获不因 `CursorLeft` 丢失。关闭窗口退出。
+
+### 输入交互（M2a 候选）
+
+既有 `.on_click(|| ...)` 保持单次激活回调，现默认成为 Tab 停靠点；`.focusable(false)` 显式退出。新增 `.focusable(true)`、`.disabled(bool)`、`.disabled_when(&Signal<bool>)` 和 `.on_event(EventPhase, handler)`。回调只得到类型化事件与上下文，不持 Scene/Renderer；结构修改仍使用 `Children` 延迟提交。
+
+`input_routing` 显示嵌套面板路由/标志、A/B 键盘计数、B 动态禁用/隐藏/删除重建、Ctrl+R 作用域快捷键和 Esc 显式释放的捕获拖动区域。Tab/Shift+Tab、Enter、Space 松开激活与金色焦点框由框架管理；灰色 hover 框/指针图标不等于后续主题系统。完整顺序、默认动作、清理、迁移及 1.0/1.5 DPI 实测证据见 [输入路由](docs/input-routing.md)。
 
 ```rust,no_run
 use chronobreak::{Application, Element, Result, Signal};
@@ -39,7 +46,7 @@ fn main() -> Result<()> {
 
 绑定使用显式依赖，无宏或自动依赖追踪；格式化闭包可捕获环境，其他捕获 Signal 不会自动成为依赖。UI 点击或消息回调修改绑定状态、提交结构命令后，框架负责同步、布局与重绘；应用无需访问 Renderer / Scene 或窗口事件循环。没有全树 diff 或完整通知事务。
 
-### 后台消息（M1c 候选）
+### 后台消息（M1c，已合入 PR #8）
 
 ```rust,no_run
 use chronobreak::{Application, Element, Signal, message_channel};

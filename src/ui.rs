@@ -14,11 +14,17 @@ use std::{
 };
 use taffy::{prelude::*, style::AvailableSpace};
 
+#[path = "input.rs"]
+mod input;
+pub use input::{EventContext, EventKind, EventPhase, KeyInput, UiEvent};
+use input::{Handler, Interaction};
+
 pub type Color = [f32; 4];
 #[derive(Default)]
 struct Update {
     text: Option<Box<dyn Any>>,
     visible: Option<bool>,
+    disabled: Option<bool>,
 }
 
 type Updates = RefCell<BTreeMap<NodeId, Update>>;
@@ -61,6 +67,10 @@ pub struct Element {
     children: Vec<Element>,
     binding: Option<Binding>,
     visibility: Option<VisibilityBinding>,
+    disability: Option<VisibilityBinding>,
+    disabled: bool,
+    focusable: Option<bool>,
+    handlers: Vec<Handler>,
     click: Option<Rc<dyn Fn()>>,
     container: Option<Children>,
     messages: Vec<Box<dyn Route>>,
@@ -85,6 +95,10 @@ impl Element {
             children: Vec::new(),
             binding: None,
             visibility: None,
+            disability: None,
+            disabled: false,
+            focusable: None,
+            handlers: Vec::new(),
             click: None,
             container: None,
             messages: Vec::new(),
@@ -151,6 +165,39 @@ impl Element {
         self
     }
 
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn disabled_when(mut self, signal: &Signal<bool>) -> Self {
+        let signal = signal.clone();
+        self.disability = Some(Box::new(move |index, pending| {
+            let disabled = signal.get();
+            let subscription = signal.subscribe(move |value| {
+                if let Some(pending) = pending.upgrade() {
+                    pending.borrow_mut().entry(index).or_default().disabled = Some(*value);
+                }
+            });
+            (disabled, subscription)
+        }));
+        self
+    }
+
+    pub fn focusable(mut self, focusable: bool) -> Self {
+        self.focusable = Some(focusable);
+        self
+    }
+
+    pub fn on_event(
+        mut self,
+        phase: EventPhase,
+        handler: impl Fn(&UiEvent, &mut EventContext) + 'static,
+    ) -> Self {
+        self.handlers.push((phase, Rc::new(handler)));
+        self
+    }
+
     /// 在 UI 线程的框架批次内处理有界后台数据。
     /// 已提交卸载关闭接收器；排队删除不是立即取消。
     pub fn on_message<T: Send + 'static>(
@@ -210,6 +257,9 @@ pub(crate) struct Node {
     _subscriptions: Vec<Subscription>,
     formatter: Option<TextFormatter>,
     visible: bool,
+    disabled: bool,
+    focusable: bool,
+    handlers: Vec<Handler>,
     pub revision: usize,
     container: Option<Children>,
 }
@@ -233,6 +283,7 @@ pub(crate) struct Scene {
     root: Option<NodeId>,
     pending: Pending,
     pressed: Option<NodeId>,
+    interaction: Interaction,
     commands: Rc<Commands>,
     viewport: Option<(f32, f32)>,
     dirty: Dirty,
@@ -279,6 +330,7 @@ impl Scene {
             root: None,
             pending: Rc::default(),
             pressed: None,
+            interaction: Interaction::default(),
             commands: Rc::default(),
             viewport: None,
             dirty: Dirty {
@@ -320,6 +372,9 @@ impl Scene {
             clip: Bounds::default(),
             background: element.background,
             click: element.click,
+            disabled: element.disabled,
+            focusable: element.focusable.unwrap_or(false),
+            handlers: element.handlers,
             _subscriptions: Vec::new(),
             formatter: None,
             visible: true,
@@ -346,6 +401,11 @@ impl Scene {
             let (visible, subscription) = bind(index, Rc::downgrade(&self.pending));
             subscriptions.push(subscription);
             visible
+        });
+        let disabled = element.disability.map(|bind| {
+            let (disabled, subscription) = bind(index, Rc::downgrade(&self.pending));
+            subscriptions.push(subscription);
+            disabled
         });
         let mut style = element.style;
         if !visible {
@@ -375,6 +435,8 @@ impl Scene {
         node._subscriptions = subscriptions;
         node.formatter = formatter;
         node.visible = visible;
+        node.disabled = disabled.unwrap_or(node.disabled);
+        node.focusable = element.focusable.unwrap_or(node.click.is_some());
         for route in element.messages {
             route.attach(&self.wake);
             self.routes.push_back((index, route));
@@ -473,22 +535,21 @@ impl Scene {
                 };
                 self.tree.set_style(node.layout_id, style).unwrap();
             }
+            if let Some(disabled) = update
+                .disabled
+                .filter(|disabled| *disabled != node.disabled)
+            {
+                node.disabled = disabled;
+                self.present_needed |= parent_visible && node.visible;
+                count += 1;
+            }
             if changed {
                 count += 1;
                 node.revision += 1;
                 self.tree.mark_dirty(node.layout_id).unwrap();
             }
         }
-        if let Some(pressed) = self.pressed {
-            let mut ancestor = Some(pressed);
-            while let Some(index) = ancestor {
-                let Some(node) = self.nodes.get(index).filter(|node| node.visible) else {
-                    self.pressed = None;
-                    break;
-                };
-                ancestor = node.parent;
-            }
-        }
+        self.reconcile_interaction();
         if count != 0 {
             self.commit_version += 1;
             self.present_needed |= self.dirty.any();
@@ -499,6 +560,7 @@ impl Scene {
     pub fn flush(&mut self, width: f32, height: f32) -> usize {
         let changed = self.sync();
         self.layout(width, height);
+        self.reconcile_hover();
         changed
     }
 
@@ -760,10 +822,11 @@ impl Scene {
         for child in &node.children {
             self.paint(*child, paints);
         }
+        self.paint_interaction(index, paints);
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> Option<NodeId> {
-        self.hit(self.root.unwrap(), x, y)
+        self.deepest_hit(x, y).and_then(|id| self.click_target(id))
     }
 
     fn hit(&self, index: NodeId, x: f32, y: f32) -> Option<NodeId> {
@@ -776,34 +839,16 @@ impl Scene {
                 return Some(hit);
             }
         }
-        node.click.as_ref().map(|_| index)
+        Some(index)
     }
 
+    #[cfg(test)]
     pub fn pointer_button(&mut self, down: bool, x: f32, y: f32) -> bool {
-        let Some((width, height)) = self.viewport else {
-            return false;
-        };
-        self.flush(width, height);
-        let hit = self.hit_test(x, y);
-        if std::env::var_os("CHRONOBREAK_TRACE").is_some() {
-            eprintln!(
-                "pointer down={down} x={x} y={y} version={} hit={hit:?}",
-                self.geometry_version
-            );
-        }
-        if down {
-            self.pressed = hit;
-            return false;
-        }
-        if let Some(index) = self.pressed.take().filter(|pressed| Some(*pressed) == hit) {
-            self.nodes[index].click.as_ref().unwrap()();
-            return true;
-        }
-        false
+        self.mouse_button(down, winit::event::MouseButton::Left, x, y)
     }
 
     pub fn cancel_pointer(&mut self) {
-        self.pressed = None;
+        self.cancel_pointer_interaction();
     }
 }
 

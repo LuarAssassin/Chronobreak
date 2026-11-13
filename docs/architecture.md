@@ -25,6 +25,7 @@ Chronobreak 是用 Rust 构建的保留模式、自绘 GUI 框架，不是对现
 
 - `src/node.rs`：框架 `NodeId = scene owner + slot + generation`，free-list 复用槽位；代际耗尽退役槽位，scene 身份耗尽明确终止，不环绕复活。taffy ID 仅存在私有节点映射与布局树中，不是应用身份。
 - `src/ui.rs`、`src/children.rs`：builder 挂载与 UI 提交队列管理动态树；节点维护父子链接，容器内 key 唯一。`insert/remove/move_before/reorder` 在提交边界验证身份、代际与直接父级；只支持同容器重排，不提供可形成环的跨容器 reparent。文本 buffer 同时用于布局测量和 glyphon 绘制，宽度约束使用 `WordOrGlyph`。
+- `src/input.rs`：M2a 候选的类型化事件/上下文与 Scene 内交互状态。最深命中节点的真实祖先路径按 capture→target→bubble 访问；独立传播/默认标志，最后执行唯一控件默认动作。hover、pressed、capture、focus、Space 身份均使用完整 NodeId；回调无 arena 可变引用，仍由正式提交统一失效。行为与迁移见 [输入路由](input-routing.md)。
 - `src/signal.rs`：UI 线程 `Rc<RefCell<_>>` 状态；变化递增版本，由线程局部弱引用 FIFO 非递归通知。普通更新结束即 drain，`batch` 嵌套到最外层结束；同 Signal 合并最终值，新版本放弃旧版本余下回调。1024 因果通知任务预算超限明确 panic，不把大量独立更新误判为循环。没有回滚、跨线程状态或 effect 图。
 - `Element::bound_text(&Signal<T>, Fn(T) -> String)` 支持 `Clone + PartialEq + 'static` 状态与可捕获环境的闭包。私有类型擦除把最新原始值排队，格式化闭包归节点所有，不放进 Signal 监听器；即使格式化闭包捕获源 Signal，也不形成 Signal → 监听器 → Signal 强引用环。初始化在挂载时读取最新值，之后同帧多次更新按节点、属性合并，格式化只处理最终文本值。`Scene::sync` 修改绑定节点并标记 taffy 脏路径，不重建 UI 树。
 - `Element::visible(&Signal<bool>)` 使用 taffy `Display::None`，隐藏父节点排除整棵后代的布局空间、显示列表与命中，保留状态、节点和订阅；取消被隐藏子树内的按压，不误取消其他按钮。卸载递归移除 arena/taffy/父子链接、key、订阅、格式化/点击闭包、buffer、pending、按压与失效命令负载。取消订阅阻止尚未开始的通知，pending 消费仍校验完整 NodeId，防止历史负载命中复用槽位。
@@ -43,9 +44,11 @@ Signal 修改值的闭包仍持有可变借用，不能在其中直接或间接�
 
 `commit_version` 是 Scene 内容提交或逻辑 viewport 改变后的单调序号，不是 Signal 版本或帧数；`geometry_version` 表示当前 bounds/clip 已包含的提交。无几何影响时复用 bounds 并推进版本，有几何影响先完成布局再推进。`about_to_wait`、redraw、尺寸/DPI 更新和每次鼠标按下/松开都使用同一提交边界；鼠标入口先读取当前窗口尺寸/scale，再命中最新已提交几何，不混用新属性和旧 bounds。允许该版本先于上次实际显示版本，不维持旧画面树。
 
-呈现意图保持到成功 present；应用只合并请求 redraw，不因点击返回值或无变化 flush 连续请求帧。临时 surface 错误保留意图并等待 100ms，重试提交期间最新值，成功回到 Wait。仍为全帧 GPU 绘制，不声称 GPU 局部重绘。M1a/M1b 已分别合入 PR #6/#7；历史证据见 [M1b 验收](batched-updates.md)。
+呈现意图保持到成功 present；应用只合并请求 redraw，不因点击返回值或无变化 flush 连续请求帧。临时 surface 错误保留意图并等待 100ms，重试提交期间最新值，成功回到 Wait。仍为全帧 GPU 绘制，不声称 GPU 局部重绘。M1a/M1b/M1c 已分别合入 PR #6/#7/#8；历史证据见 [M1b 验收](batched-updates.md) 与 [后台消息](background-messages.md)。
 
-M1c 候选的 user_event 仅标记消息已就绪；每个 `about_to_wait` 最多轮转处理全场景 64 条，避免某些平台同一轮继续消费新 proxy 事件导致饥饿。消费前确认唤醒并先提交旧结构命令；消息回调在一个 M1b batch 内执行，批后统一提交，再沿原路径必要布局/呈现。队列仍有消息则重新投递一次 proxy；生产者在确认前发送由已有事件覆盖，确认后发送会投递后继事件，不因消费端末尾检查而丢唤醒。卸载命令在批末提交，同批尚未开始的消息不因排队删除立即失效；需要立即关闭时使用 UI 取消句柄。暂停/遮挡/零尺寸继续接收和有限更新模型，但无轮询或忙重绘；恢复后呈现最新状态。详见 [后台消息合同](background-messages.md)。焦点/IME、主题、任务运行时和 LLM 产品未实施。
+M1c 的 user_event 仅标记消息已就绪；每个 `about_to_wait` 最多轮转处理全场景 64 条，避免某些平台同一轮继续消费新 proxy 事件导致饥饿。消费前确认唤醒并先提交旧结构命令；消息回调在一个 M1b batch 内执行，批后统一提交，再沿原路径必要布局/呈现。队列仍有消息则重新投递一次 proxy；生产者在确认前发送由已有事件覆盖，确认后发送会投递后继事件，不因消费端末尾检查而丢唤醒。卸载命令在批末提交，同批尚未开始的消息不因排队删除立即失效；需要立即关闭时使用 UI 取消句柄。暂停/遮挡/零尺寸继续接收和有限更新模型，但无轮询或忙重绘；恢复后呈现最新状态。详见 [后台消息合同](background-messages.md)。
+
+M2a 在窗口输入前复用同一 flush/逻辑几何快照；鼠标移动/各按钮、键盘及修饰键接入原循环，DPI 变化重投影已有物理指针。单个路由及默认动作在 M1b batch 内完成，事件末由原调度合并呈现。仅 hover/focus 变化不标记文字测量脏；边框使用四条裁剪内矩形，未修改 Renderer 或引入主题样式层。失焦/暂停清理交互，尺寸/DPI 变化保留原按压取消规则；有效捕获允许控件外路由，但不调用桌面 cursor grab/confine。仅收到非空 preedit 时暂缓路由快捷键并撤销 Space 待激活，不是 IME 支持。M2b 滚动、M3 编辑/IME、主题、任务运行时和 LLM 产品仍未实施。
 
 ## 参考来源
 
