@@ -1,12 +1,26 @@
-use crate::ui::{Bounds, Color, Paint, Scene};
+use crate::{
+    NodeId,
+    ui::{Bounds, Color, Paint, Scene},
+};
 use glyphon::{
     Cache, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
-use std::{error::Error, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    sync::Arc,
+};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+pub(crate) fn retain_text_resources<T>(
+    resources: &mut BTreeMap<NodeId, T>,
+    drawable: &BTreeSet<NodeId>,
+) {
+    resources.retain(|id, _| drawable.contains(id));
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawOutcome {
@@ -45,7 +59,9 @@ pub struct Renderer {
     atlas: TextAtlas,
     viewport: Viewport,
     swash: SwashCache,
-    texts: Vec<Option<TextRenderer>>,
+    texts: BTreeMap<NodeId, TextRenderer>,
+    text_high_water: usize,
+    prepared_total: usize,
 }
 
 impl Renderer {
@@ -118,7 +134,9 @@ impl Renderer {
             atlas,
             viewport,
             swash: SwashCache::new(),
-            texts: Vec::new(),
+            texts: BTreeMap::new(),
+            text_high_water: 0,
+            prepared_total: 0,
         })
     }
 
@@ -131,7 +149,25 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
+    pub fn collect_unmounted(&mut self, scene: &Scene) {
+        self.texts.retain(|id, _| {
+            scene
+                .nodes
+                .get(*id)
+                .is_some_and(|node| node.buffer.is_some())
+        });
+    }
+
     pub fn draw(&mut self, scene: &mut Scene, scale: f32) -> Result<DrawOutcome> {
+        let paints = scene.display_list();
+        let drawable: BTreeSet<_> = paints
+            .iter()
+            .filter_map(|paint| match paint {
+                Paint::Text(id) if scene.nodes.get(*id).is_some() => Some(*id),
+                _ => None,
+            })
+            .collect();
+        retain_text_resources(&mut self.texts, &drawable);
         let Some(frame) = acquire_frame(self.surface.get_current_texture(), || {
             self.surface.configure(&self.device, &self.config);
         })?
@@ -145,45 +181,62 @@ impl Renderer {
                 height: self.config.height,
             },
         );
-        while self.texts.len() < scene.nodes.len() {
-            let index = self.texts.len();
-            self.texts.push(scene.nodes[index].buffer.as_ref().map(|_| {
-                TextRenderer::new(&mut self.atlas, &self.device, Default::default(), None)
-            }));
-        }
-        for (index, node) in scene.nodes.iter().enumerate() {
+        for index in &drawable {
+            let node = &scene.nodes[*index];
             if let Some(buffer) = &node.buffer {
                 let clip = physical_clip(node.clip, scale, self.config.width, self.config.height);
-                self.texts[index].as_mut().unwrap().prepare(
-                    &self.device,
-                    &self.queue,
-                    &mut scene.fonts,
-                    &mut self.atlas,
-                    &self.viewport,
-                    [TextArea {
-                        buffer,
-                        left: node.bounds.x * scale,
-                        top: node.bounds.y * scale,
-                        scale,
-                        bounds: TextBounds {
-                            left: clip.0 as i32,
-                            top: clip.1 as i32,
-                            right: (clip.0 + clip.2) as i32,
-                            bottom: (clip.1 + clip.3) as i32,
-                        },
-                        default_color: glyphon::Color::rgba(
-                            (node.color[0] * 255.0) as u8,
-                            (node.color[1] * 255.0) as u8,
-                            (node.color[2] * 255.0) as u8,
-                            (node.color[3] * 255.0) as u8,
-                        ),
-                        custom_glyphs: &[],
-                    }],
-                    &mut self.swash,
-                )?;
+                self.texts
+                    .entry(*index)
+                    .or_insert_with(|| {
+                        TextRenderer::new(&mut self.atlas, &self.device, Default::default(), None)
+                    })
+                    .prepare(
+                        &self.device,
+                        &self.queue,
+                        &mut scene.fonts,
+                        &mut self.atlas,
+                        &self.viewport,
+                        [TextArea {
+                            buffer,
+                            left: node.bounds.x * scale,
+                            top: node.bounds.y * scale,
+                            scale,
+                            bounds: TextBounds {
+                                left: clip.0 as i32,
+                                top: clip.1 as i32,
+                                right: (clip.0 + clip.2) as i32,
+                                bottom: (clip.1 + clip.3) as i32,
+                            },
+                            default_color: glyphon::Color::rgba(
+                                (node.color[0] * 255.0) as u8,
+                                (node.color[1] * 255.0) as u8,
+                                (node.color[2] * 255.0) as u8,
+                                (node.color[3] * 255.0) as u8,
+                            ),
+                            custom_glyphs: &[],
+                        }],
+                        &mut self.swash,
+                    )?;
+                self.prepared_total += 1;
             }
         }
-        let paints = scene.display_list();
+        self.text_high_water = self.text_high_water.max(self.texts.len());
+        if std::env::var_os("CHRONOBREAK_TRACE").is_some() {
+            let buffers = scene
+                .nodes
+                .iter()
+                .filter(|node| node.buffer.is_some())
+                .count();
+            eprintln!(
+                "resources {} prepared={} skipped={} text_cache={} text_high_water={} prepared_total={}",
+                scene.stats(),
+                drawable.len(),
+                buffers - drawable.len(),
+                self.texts.len(),
+                self.text_high_water,
+                self.prepared_total
+            );
+        }
         let mut vertices = Vec::new();
         let width = self.config.width as f32 / scale;
         let height = self.config.height as f32 / scale;
@@ -250,11 +303,11 @@ impl Renderer {
                     }
                     Paint::Text(index) => {
                         pass.set_scissor_rect(0, 0, self.config.width, self.config.height);
-                        self.texts[index].as_ref().unwrap().render(
-                            &self.atlas,
-                            &self.viewport,
-                            &mut pass,
-                        )?;
+                        let Some(text) = self.texts.get(&index) else {
+                            eprintln!("Chronobreak skipped stale text resource: {index:?}");
+                            continue;
+                        };
+                        text.render(&self.atlas, &self.viewport, &mut pass)?;
                     }
                 }
             }

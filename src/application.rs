@@ -162,6 +162,18 @@ impl ApplicationHandler for Application {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.scene.sync() > 0
+            && let Some(window) = &self.window
+        {
+            let size = window.inner_size();
+            let scale = window.scale_factor() as f32;
+            self.scene
+                .layout(size.width as f32 / scale, size.height as f32 / scale);
+            if let Some(renderer) = &mut self.renderer {
+                renderer.collect_unmounted(&self.scene);
+            }
+            window.request_redraw();
+        }
         if let Some(window) = &self.window
             && self.redraw_schedule.take_retry(Instant::now())
         {
@@ -230,13 +242,16 @@ impl ApplicationHandler for Application {
             } => {
                 if let Some(position) = self.cursor {
                     let scale = window.scale_factor();
-                    if self.scene.pointer_button(
+                    self.scene.pointer_button(
                         state == ElementState::Pressed,
                         (position.x / scale) as f32,
                         (position.y / scale) as f32,
-                    ) {
-                        window.request_redraw();
-                    }
+                    );
+                    self.renderer
+                        .as_mut()
+                        .unwrap()
+                        .collect_unmounted(&self.scene);
+                    window.request_redraw();
                 }
             }
             WindowEvent::RedrawRequested => {
