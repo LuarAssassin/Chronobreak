@@ -1,6 +1,8 @@
 # 文档与参考资料
 
-- [技术路线与交付里程碑](technical-roadmap.md)：框架全局架构、分阶段验收与待定取舍。
+- [技术路线与交付里程碑](technical-roadmap.md)：框架全局架构、分阶段验收与已确认方向/待确认合同。
+- [知识整理工作台核心](knowledge-workbench.md)：树形思维导图小闭环、分切验收与框架/应用边界。
+- [明暗主题方向](theme-direction.md)：冰青/炽红配色、语义 token 与可读性基线。
 - [初始架构方向](architecture.md)：第一版技术取舍与可运行目标。
 - [最小 GUI 验证](minimal-gui.md)：运行方式、交互复验与图形证据。
 - [可复用核心验证](reusable-core.md)：库入口、泛型绑定、显示开关与双计数器验收。
