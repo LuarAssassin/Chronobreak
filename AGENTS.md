@@ -9,5 +9,6 @@
 - `docs/theme-direction.md`：明暗主题、颜色语义与可读性基线。
 - `src/`：状态、保留 UI 树、自绘渲染与窗口实现。
 - `docs/minimal-gui.md`：最小 GUI 复验流程与运行证据。
-- `examples/`：简单计数器与状态面板。
+- `examples/`：基础面板与动态树示例。
 - `docs/reusable-core.md`：可复用核心验收与证据。
+- `docs/node-lifecycle.md`：M1a 动态树、卸载与文字资源验收。

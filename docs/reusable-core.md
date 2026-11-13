@@ -1,5 +1,7 @@
 # 可复用核心验证
 
+本文为 2026-11-12 固定拓扑基线的历史记录；当前动态树能力与新增验收见 [M1a 节点生命周期](node-lifecycle.md)，不覆盖或改写下述原始测试/图形结论。
+
 ## 能力与入口
 
 `Application::new(root).title(...).run()` 统一管理窗口、事件循环与重绘；`examples/counter.rs` 和 `examples/state_panel.rs` 只定义业务状态及 Element，不持有 Renderer / Scene，不手写同步或请求重绘。运行命令为 `cargo run --example counter --locked`、`cargo run --example state_panel --locked`，不再提供默认二进制。

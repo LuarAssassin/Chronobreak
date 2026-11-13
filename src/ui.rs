@@ -1,9 +1,13 @@
 use crate::signal::{Signal, Subscription};
+use crate::{
+    children::{Action, Children, Commands, TreeError},
+    node::{Arena, NodeId},
+};
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Wrap};
 use std::{
     any::Any,
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     rc::{Rc, Weak},
 };
 use taffy::{prelude::*, style::AvailableSpace};
@@ -15,11 +19,11 @@ struct Update {
     visible: Option<bool>,
 }
 
-type Updates = RefCell<BTreeMap<usize, Update>>;
+type Updates = RefCell<BTreeMap<NodeId, Update>>;
 type Pending = Rc<Updates>;
 type TextFormatter = Box<dyn Fn(Box<dyn Any>) -> String>;
-type Binding = Box<dyn FnOnce(usize, Weak<Updates>) -> (String, Subscription, TextFormatter)>;
-type VisibilityBinding = Box<dyn FnOnce(usize, Weak<Updates>) -> (bool, Subscription)>;
+type Binding = Box<dyn FnOnce(NodeId, Weak<Updates>) -> (String, Subscription, TextFormatter)>;
+type VisibilityBinding = Box<dyn FnOnce(NodeId, Weak<Updates>) -> (bool, Subscription)>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Bounds {
@@ -56,6 +60,7 @@ pub struct Element {
     binding: Option<Binding>,
     visibility: Option<VisibilityBinding>,
     click: Option<Rc<dyn Fn()>>,
+    container: Option<Children>,
 }
 
 impl Element {
@@ -78,6 +83,7 @@ impl Element {
             binding: None,
             visibility: None,
             click: None,
+            container: None,
         }
     }
 
@@ -86,6 +92,18 @@ impl Element {
             text: Some(text.into()),
             ..Self::column()
         }
+    }
+
+    /// Create an initially empty keyed container and its deferred command handle.
+    pub fn keyed_column() -> (Self, Children) {
+        let children = Children::default();
+        (
+            Self {
+                container: Some(children.clone()),
+                ..Self::column()
+            },
+            children,
+        )
     }
 
     pub fn bound_text<T: Clone + PartialEq + 'static>(
@@ -164,8 +182,9 @@ impl Element {
 }
 
 pub(crate) struct Node {
-    layout_id: NodeId,
-    children: Vec<usize>,
+    layout_id: taffy::NodeId,
+    parent: Option<NodeId>,
+    children: Vec<NodeId>,
     pub buffer: Option<Buffer>,
     pub color: Color,
     pub bounds: Bounds,
@@ -176,6 +195,7 @@ pub(crate) struct Node {
     formatter: Option<TextFormatter>,
     visible: bool,
     pub revision: usize,
+    container: Option<Children>,
 }
 
 #[derive(Clone, Copy)]
@@ -185,33 +205,51 @@ pub(crate) enum Paint {
         clip: Bounds,
         color: Color,
     },
-    Text(usize),
+    Text(NodeId),
 }
 
 pub(crate) struct Scene {
     pub fonts: FontSystem,
-    pub nodes: Vec<Node>,
-    tree: TaffyTree<usize>,
-    root: usize,
+    pub nodes: Arena<Node>,
+    tree: TaffyTree<NodeId>,
+    root: Option<NodeId>,
     pending: Pending,
-    pressed: Option<usize>,
+    pressed: Option<NodeId>,
+    commands: Rc<Commands>,
+    viewport: Option<(f32, f32)>,
+}
+
+impl Drop for Scene {
+    fn drop(&mut self) {
+        for node in self.nodes.iter() {
+            if let Some(container) = &node.container {
+                container.0.borrow_mut().keys.clear();
+            }
+        }
+        let commands = std::mem::take(&mut *self.commands.borrow_mut());
+        for command in commands {
+            command.receipt.finish(Err(TreeError::SceneDropped));
+        }
+    }
 }
 
 impl Scene {
     pub fn new(element: Element) -> Self {
         let mut scene = Self {
             fonts: FontSystem::new(),
-            nodes: Vec::new(),
+            nodes: Arena::new(),
             tree: TaffyTree::new(),
-            root: 0,
+            root: None,
             pending: Rc::default(),
             pressed: None,
+            commands: Rc::default(),
+            viewport: None,
         };
-        scene.root = scene.mount(element);
+        scene.root = Some(scene.mount(element));
         scene
     }
 
-    fn mount(&mut self, element: Element) -> usize {
+    fn mount(&mut self, element: Element) -> NodeId {
         let children: Vec<_> = element
             .children
             .into_iter()
@@ -221,7 +259,34 @@ impl Scene {
             .iter()
             .map(|index| self.nodes[*index].layout_id)
             .collect();
-        let index = self.nodes.len();
+        let layout_id = self
+            .tree
+            .new_with_children(element.style.clone(), &child_ids)
+            .unwrap();
+        let index = self.nodes.insert(Node {
+            layout_id,
+            parent: None,
+            children,
+            buffer: None,
+            color: element.color,
+            bounds: Bounds::default(),
+            clip: Bounds::default(),
+            background: element.background,
+            click: element.click,
+            _subscriptions: Vec::new(),
+            formatter: None,
+            visible: true,
+            revision: 0,
+            container: element.container,
+        });
+        for child in self.nodes[index].children.clone() {
+            self.nodes[child].parent = Some(index);
+        }
+        if let Some(handle) = &self.nodes[index].container {
+            let mut container = handle.0.borrow_mut();
+            container.id = Some(index);
+            container.queue = Rc::downgrade(&self.commands);
+        }
         let mut subscriptions = Vec::new();
         let mut text = element.text;
         let formatter = element.binding.map(|bind| {
@@ -253,32 +318,32 @@ impl Scene {
             );
             buffer
         });
-        let layout_id = self.tree.new_with_children(style, &child_ids).unwrap();
+        self.tree.set_style(layout_id, style).unwrap();
         if buffer.is_some() {
             self.tree.set_node_context(layout_id, Some(index)).unwrap();
         }
-        self.nodes.push(Node {
-            layout_id,
-            children,
-            buffer,
-            color: element.color,
-            bounds: Bounds::default(),
-            clip: Bounds::default(),
-            background: element.background,
-            click: element.click,
-            _subscriptions: subscriptions,
-            formatter,
-            visible,
-            revision: 0,
-        });
+        let node = &mut self.nodes[index];
+        node.buffer = buffer;
+        node._subscriptions = subscriptions;
+        node.formatter = formatter;
+        node.visible = visible;
         index
     }
 
     pub fn sync(&mut self) -> usize {
+        let commands = std::mem::take(&mut *self.commands.borrow_mut());
+        let mut count = 0;
+        for command in commands {
+            let result = self.apply(command.target, command.action);
+            count += usize::from(result.is_ok());
+            command.receipt.finish(result);
+        }
         let pending = std::mem::take(&mut *self.pending.borrow_mut());
-        let count = pending.len();
         for (index, update) in pending {
-            let node = &mut self.nodes[index];
+            let Some(node) = self.nodes.get_mut(index) else {
+                continue;
+            };
+            count += 1;
             if let Some(value) = update.text {
                 let text = node.formatter.as_ref().unwrap()(value);
                 node.buffer.as_mut().unwrap().set_text(
@@ -307,8 +372,135 @@ impl Scene {
         count
     }
 
+    fn validate(&self, id: NodeId) -> Result<(), TreeError> {
+        if !self.nodes.owns(id) {
+            return Err(TreeError::ForeignScene);
+        }
+        self.nodes.get(id).ok_or(TreeError::StaleNode).map(|_| ())
+    }
+
+    fn direct_child(&self, parent: NodeId, child: NodeId) -> Result<(), TreeError> {
+        self.validate(child)?;
+        if self.nodes[child].parent != Some(parent) {
+            return Err(TreeError::WrongContainer);
+        }
+        Ok(())
+    }
+
+    fn apply(&mut self, target: NodeId, action: Action) -> Result<Option<NodeId>, TreeError> {
+        self.validate(target)?;
+        let handle = self.nodes[target]
+            .container
+            .clone()
+            .ok_or(TreeError::WrongContainer)?;
+        match action {
+            Action::Insert(key, element) => {
+                if handle.0.borrow().keys.contains_key(&key) {
+                    return Err(TreeError::DuplicateKey(key));
+                }
+                let child = self.mount(*element);
+                self.nodes[child].parent = Some(target);
+                self.nodes[target].children.push(child);
+                handle.0.borrow_mut().keys.insert(key, child);
+                self.update_children(target);
+                Ok(Some(child))
+            }
+            Action::Remove(child) => {
+                self.direct_child(target, child)?;
+                self.nodes[target].children.retain(|id| *id != child);
+                handle.0.borrow_mut().keys.retain(|_, id| *id != child);
+                self.update_children(target);
+                self.unmount(child);
+                Ok(None)
+            }
+            Action::MoveBefore(child, before) => {
+                self.direct_child(target, child)?;
+                if let Some(before) = before {
+                    self.direct_child(target, before)?;
+                    if child == before {
+                        return Err(TreeError::InvalidMove);
+                    }
+                }
+                let children = &mut self.nodes[target].children;
+                children.retain(|id| *id != child);
+                let position = before
+                    .and_then(|before| children.iter().position(|id| *id == before))
+                    .unwrap_or(children.len());
+                children.insert(position, child);
+                self.update_children(target);
+                Ok(None)
+            }
+            Action::Reorder(order) => {
+                for child in &order {
+                    self.direct_child(target, *child)?;
+                }
+                let unique: BTreeSet<_> = order.iter().copied().collect();
+                if unique.len() != order.len() || order.len() != self.nodes[target].children.len() {
+                    return Err(TreeError::InvalidOrder);
+                }
+                self.nodes[target].children = order;
+                self.update_children(target);
+                Ok(None)
+            }
+        }
+    }
+
+    fn update_children(&mut self, parent: NodeId) {
+        let layouts: Vec<_> = self.nodes[parent]
+            .children
+            .iter()
+            .map(|id| self.nodes[*id].layout_id)
+            .collect();
+        self.tree
+            .set_children(self.nodes[parent].layout_id, &layouts)
+            .unwrap();
+    }
+
+    fn unmount(&mut self, id: NodeId) {
+        let node = self.nodes.remove(id).expect("validated subtree");
+        if self.pressed == Some(id) {
+            self.pressed = None;
+        }
+        self.pending.borrow_mut().remove(&id);
+        if let Some(container) = &node.container {
+            container.0.borrow_mut().keys.clear();
+        }
+        let queued = std::mem::take(&mut *self.commands.borrow_mut());
+        for command in queued {
+            if command.target == id {
+                command.receipt.finish(Err(TreeError::StaleNode));
+            } else {
+                self.commands.borrow_mut().push_back(command);
+            }
+        }
+        for child in &node.children {
+            self.unmount(*child);
+        }
+        self.tree.remove(node.layout_id).unwrap();
+    }
+
+    pub(crate) fn stats(&self) -> String {
+        format!(
+            "live={} taffy={} slots={} subscriptions={} pending={} queued={} text_buffers={}",
+            self.nodes.len(),
+            self.tree.total_node_count(),
+            self.nodes.slot_capacity(),
+            self.nodes
+                .iter()
+                .map(|node| node._subscriptions.len())
+                .sum::<usize>(),
+            self.pending.borrow().len(),
+            self.commands.borrow().len(),
+            self.nodes
+                .iter()
+                .filter(|node| node.buffer.is_some())
+                .count()
+        )
+    }
+
     pub fn layout(&mut self, width: f32, height: f32) {
-        let root_id = self.nodes[self.root].layout_id;
+        self.viewport = Some((width, height));
+        let root_id = self.nodes[self.root.unwrap()].layout_id;
         if self.tree.style(root_id).unwrap().size.width != length(width) {
             let mut style = self.tree.style(root_id).unwrap().clone();
             style.size.width = length(width);
@@ -349,7 +541,7 @@ impl Scene {
             )
             .unwrap();
         self.place(
-            self.root,
+            self.root.unwrap(),
             0.0,
             0.0,
             Bounds {
@@ -361,7 +553,7 @@ impl Scene {
         );
     }
 
-    fn place(&mut self, index: usize, parent_x: f32, parent_y: f32, clip: Bounds) {
+    fn place(&mut self, index: NodeId, parent_x: f32, parent_y: f32, clip: Bounds) {
         let layout = self.tree.layout(self.nodes[index].layout_id).unwrap();
         let bounds = Bounds {
             x: parent_x + layout.location.x,
@@ -384,13 +576,13 @@ impl Scene {
 
     pub fn display_list(&self) -> Vec<Paint> {
         let mut paints = Vec::new();
-        self.paint(self.root, &mut paints);
+        self.paint(self.root.unwrap(), &mut paints);
         paints
     }
 
-    fn paint(&self, index: usize, paints: &mut Vec<Paint>) {
+    fn paint(&self, index: NodeId, paints: &mut Vec<Paint>) {
         let node = &self.nodes[index];
-        if !node.visible {
+        if !node.visible || node.clip.width <= 0.0 || node.clip.height <= 0.0 {
             return;
         }
         if let Some(color) = node.background {
@@ -408,11 +600,11 @@ impl Scene {
         }
     }
 
-    pub fn hit_test(&self, x: f32, y: f32) -> Option<usize> {
-        self.hit(self.root, x, y)
+    pub fn hit_test(&self, x: f32, y: f32) -> Option<NodeId> {
+        self.hit(self.root.unwrap(), x, y)
     }
 
-    fn hit(&self, index: usize, x: f32, y: f32) -> Option<usize> {
+    fn hit(&self, index: NodeId, x: f32, y: f32) -> Option<NodeId> {
         let node = &self.nodes[index];
         if !node.visible || !node.clip.contains(x, y) {
             return None;
@@ -426,7 +618,11 @@ impl Scene {
     }
 
     pub fn pointer_button(&mut self, down: bool, x: f32, y: f32) -> bool {
-        self.sync();
+        if self.sync() > 0
+            && let Some((width, height)) = self.viewport
+        {
+            self.layout(width, height);
+        }
         let hit = self.hit_test(x, y);
         if down {
             self.pressed = hit;
@@ -443,6 +639,10 @@ impl Scene {
         self.pressed = None;
     }
 }
+
+#[cfg(test)]
+#[path = "lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
@@ -462,10 +662,10 @@ mod tests {
             "中文排版与自动换行测试，Rust retained layout and real font measurement.",
         )));
         scene.layout(600.0, 800.0);
-        let wide = scene.nodes[0].bounds.height;
+        let wide = scene.nodes.iter().next().unwrap().bounds.height;
         scene.layout(120.0, 800.0);
-        assert!(scene.nodes[0].bounds.height > wide);
-        assert!(scene.nodes[0].bounds.width <= 120.0);
+        assert!(scene.nodes.iter().next().unwrap().bounds.height > wide);
+        assert!(scene.nodes.iter().next().unwrap().bounds.width <= 120.0);
     }
 
     #[test]
@@ -505,7 +705,7 @@ mod tests {
 
     #[test]
     fn display_list_preserves_interleaved_tree_order() {
-        let scene = Scene::new(
+        let mut scene = Scene::new(
             Element::column()
                 .background([0.0; 4])
                 .child(Element::text("first"))
@@ -515,14 +715,17 @@ mod tests {
                         .child(Element::text("last")),
                 ),
         );
+        scene.layout(400.0, 600.0);
         assert!(matches!(
             scene.display_list().as_slice(),
             [
                 Paint::Rect { .. },
-                Paint::Text(0),
+                Paint::Text(first),
                 Paint::Rect { .. },
-                Paint::Text(1)
-            ]
+                Paint::Text(last)
+            ] if first != last
+                && scene.nodes[*first].buffer.as_ref().unwrap().lines[0].text() == "first"
+                && scene.nodes[*last].buffer.as_ref().unwrap().lines[0].text() == "last"
         ));
     }
 
@@ -680,7 +883,7 @@ mod tests {
         signal.update(|value| *value = false);
         signal.update(|value| *value = true);
         assert_eq!(scene.sync(), 1);
-        assert_eq!(scene.nodes[0].revision, 1);
+        assert_eq!(scene.nodes.iter().next().unwrap().revision, 1);
         signal.update(|value| *value = false);
         drop(scene);
         assert_eq!(signal.subscriber_count(), 0);
@@ -696,7 +899,7 @@ mod tests {
         scene.layout(400.0, 600.0);
         assert!(scene.display_list().is_empty());
         assert!(scene.hit_test(1.0, 1.0).is_none());
-        assert_eq!(scene.nodes[scene.root].bounds.height, 0.0);
+        assert_eq!(scene.nodes[scene.root.unwrap()].bounds.height, 0.0);
         shown.update(|value| *value = true);
         scene.sync();
         scene.layout(400.0, 600.0);
