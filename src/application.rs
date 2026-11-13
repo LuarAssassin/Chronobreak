@@ -1,6 +1,6 @@
 use crate::{
     render::{DrawOutcome, Renderer, Result},
-    ui::{Element, Scene},
+    ui::{Element, KeyInput, Scene},
 };
 use std::{
     sync::Arc,
@@ -9,12 +9,16 @@ use std::{
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalSize, PhysicalPosition},
-    event::{ElementState, MouseButton, WindowEvent},
+    event::{ElementState, Ime, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    window::{Window, WindowId},
+    window::{CursorIcon, Window, WindowId},
 };
 
 const RETRY_DELAY: Duration = Duration::from_millis(100);
+
+fn logical_position(position: PhysicalPosition<f64>, scale: f64) -> (f32, f32) {
+    ((position.x / scale) as f32, (position.y / scale) as f32)
+}
 
 #[derive(Debug)]
 enum UserEvent {
@@ -205,7 +209,7 @@ impl ApplicationHandler<UserEvent> for Application {
         self.renderer = None;
         self.window = None;
         self.cursor = None;
-        self.scene.cancel_pointer();
+        self.scene.focus_lost();
         self.redraw_schedule = RedrawSchedule::default();
     }
 
@@ -221,6 +225,11 @@ impl ApplicationHandler<UserEvent> for Application {
             let scale = window.scale_factor() as f32;
             self.scene
                 .flush(size.width as f32 / scale, size.height as f32 / scale);
+            window.set_cursor(if self.scene.pointer_cursor() {
+                CursorIcon::Pointer
+            } else {
+                CursorIcon::Default
+            });
             if let Some(renderer) = &mut self.renderer {
                 renderer.collect_unmounted(&self.scene);
             }
@@ -263,10 +272,22 @@ impl ApplicationHandler<UserEvent> for Application {
                     | WindowEvent::CursorLeft { .. }
                     | WindowEvent::MouseInput { .. }
                     | WindowEvent::Focused(_)
+                    | WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::ModifiersChanged(_)
             )
         {
             eprintln!("input {event:?}");
         }
+        let size = window.inner_size();
+        let scale = window.scale_factor() as f32;
+        if matches!(event, WindowEvent::ScaleFactorChanged { .. }) {
+            self.scene.pointer_position(
+                self.cursor
+                    .map(|position| logical_position(position, window.scale_factor())),
+            );
+        }
+        self.scene
+            .flush(size.width as f32 / scale, size.height as f32 / scale);
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -302,33 +323,52 @@ impl ApplicationHandler<UserEvent> for Application {
                     window.request_redraw();
                 }
             }
-            WindowEvent::CursorMoved { position, .. } => self.cursor = Some(position),
-            WindowEvent::CursorLeft { .. } | WindowEvent::Focused(false) => {
-                self.cursor = None;
-                self.scene.cancel_pointer();
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = Some(position);
+                let (x, y) = logical_position(position, window.scale_factor());
+                self.scene.pointer_move(x, y);
             }
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Left,
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor = None;
+                self.scene.cursor_left();
+            }
+            WindowEvent::Focused(false) => {
+                self.cursor = None;
+                self.scene.focus_lost();
+            }
+            WindowEvent::ModifiersChanged(modifiers) => self.scene.modifiers(modifiers.state()),
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic,
                 ..
             } => {
-                if let Some(position) = self.cursor {
-                    let scale = window.scale_factor();
-                    let size = window.inner_size();
-                    self.scene.flush(
-                        (size.width as f64 / scale) as f32,
-                        (size.height as f64 / scale) as f32,
-                    );
-                    self.scene.pointer_button(
-                        state == ElementState::Pressed,
-                        (position.x / scale) as f32,
-                        (position.y / scale) as f32,
-                    );
-                    self.renderer
-                        .as_mut()
-                        .unwrap()
-                        .collect_unmounted(&self.scene);
-                }
+                self.scene
+                    .keyboard(KeyInput::from_winit(event, is_synthetic));
+            }
+            WindowEvent::Ime(Ime::Preedit(text, _)) => self.scene.composing(!text.is_empty()),
+            WindowEvent::Ime(Ime::Commit(_) | Ime::Disabled) => self.scene.composing(false),
+            WindowEvent::Touch(winit::event::Touch {
+                phase: winit::event::TouchPhase::Cancelled,
+                ..
+            }) => {
+                self.scene.cancel_pointer();
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let scale = window.scale_factor();
+                let size = window.inner_size();
+                self.scene.flush(
+                    (size.width as f64 / scale) as f32,
+                    (size.height as f64 / scale) as f32,
+                );
+                let position = self
+                    .cursor
+                    .map(|position| logical_position(position, scale));
+                self.scene
+                    .mouse_input(state == ElementState::Pressed, button, position);
+                self.renderer
+                    .as_mut()
+                    .unwrap()
+                    .collect_unmounted(&self.scene);
             }
             WindowEvent::RedrawRequested => {
                 self.redraw_schedule.requested = false;
@@ -346,6 +386,18 @@ impl ApplicationHandler<UserEvent> for Application {
 mod tests {
     use super::*;
     use crate::signal::Signal;
+
+    #[test]
+    fn backend_pointer_normalization_retains_negative_coordinates_and_dpi() {
+        assert_eq!(
+            logical_position(PhysicalPosition::new(300.0, 150.0), 1.5),
+            (200.0, 100.0)
+        );
+        assert_eq!(
+            logical_position(PhysicalPosition::new(-3.0, -6.0), 1.5),
+            (-2.0, -4.0)
+        );
+    }
 
     #[test]
     fn synced_update_is_retried_without_another_input() {

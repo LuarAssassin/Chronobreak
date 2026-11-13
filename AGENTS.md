@@ -14,3 +14,4 @@
 - `docs/node-lifecycle.md`：M1a 动态树、卸载与文字资源验收。
 - `docs/batched-updates.md`：M1b 通知、批处理、提交与几何快照合同。
 - `docs/background-messages.md`：M1c 有界消息、UI 作用域、外部唤醒与验收。
+- `docs/input-routing.md`：M2a 路由、焦点、捕获、默认激活与验收。
