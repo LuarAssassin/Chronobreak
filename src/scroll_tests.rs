@@ -380,6 +380,99 @@ fn oversized_target_has_finite_nearest_policy_and_non_scroll_clipping_is_not_und
     assert_eq!(handle.snapshot().offset, 150.0);
 }
 
+fn nested_oversized(clip_height: Option<f32>) -> (Scene, ScrollHandle, ScrollHandle, NodeId) {
+    let (content, children) = Element::keyed_column();
+    let (inner_view, inner) = Element::scroll_view(40.0, content);
+    let inner_view = if let Some(height) = clip_height {
+        Element::column().height(height).child(inner_view)
+    } else {
+        inner_view
+    };
+    let (outer_view, outer) = Element::scroll_view(
+        100.0,
+        Element::column()
+            .child(row(200.0))
+            .child(inner_view)
+            .child(row(200.0)),
+    );
+    let mut scene = Scene::new(outer_view);
+    children.insert("target", row(200.0).focusable(true));
+    scene.flush(200.0, 600.0);
+    let target = children.node("target").unwrap();
+    inner.scroll_to(160.0);
+    scene.flush(200.0, 600.0);
+    assert_eq!(inner.snapshot().offset, 160.0);
+    assert_eq!(outer.snapshot().offset, 0.0);
+    assert_eq!(scene.nodes[target].clip.height, 0.0);
+    (scene, outer, inner, target)
+}
+
+fn assert_nested_oversized_revealed(
+    scene: &Scene,
+    outer: &ScrollHandle,
+    inner: &ScrollHandle,
+    target: NodeId,
+) {
+    assert_eq!(inner.snapshot().offset, 160.0);
+    assert_eq!(outer.snapshot().offset, 140.0);
+    let viewport = &scene.nodes[inner.id().unwrap()];
+    assert_eq!(viewport.bounds.y, 60.0);
+    assert_eq!(viewport.clip, viewport.bounds);
+    assert_eq!(viewport.clip.height, 40.0);
+    assert_eq!(scene.nodes[target].clip, viewport.clip);
+}
+
+#[test]
+fn explicit_nested_oversized_reveal_propagates_only_the_visible_slice() {
+    let (mut scene, outer, inner, target) = nested_oversized(None);
+    let receipt = outer.scroll_into_view(target);
+    scene.flush(200.0, 600.0);
+    assert_eq!(receipt.result(), Some(Ok(())));
+    assert_nested_oversized_revealed(&scene, &outer, &inner, target);
+    let placements = scene.placements;
+    outer.scroll_into_view(target);
+    scene.flush(200.0, 600.0);
+    assert_nested_oversized_revealed(&scene, &outer, &inner, target);
+    assert_eq!(scene.placements, placements);
+}
+
+#[test]
+fn tab_nested_oversized_reveal_propagates_only_the_visible_slice_without_snapback() {
+    let (mut scene, outer, inner, target) = nested_oversized(None);
+    tab(&mut scene, false);
+    assert_nested_oversized_revealed(&scene, &outer, &inner, target);
+    outer.scroll_to(0.0);
+    for _ in 0..3 {
+        scene.flush(200.0, 600.0);
+    }
+    assert_eq!(outer.snapshot().offset, 0.0);
+    assert_eq!(inner.snapshot().offset, 160.0);
+    assert_eq!(scene.nodes[target].clip.height, 0.0);
+}
+
+#[test]
+fn nested_reveal_preserves_intermediate_non_scroll_clipping_without_offset_churn() {
+    for height in [20.0, 0.0] {
+        let (mut scene, outer, inner, target) = nested_oversized(Some(height));
+        for _ in 0..3 {
+            let receipt = outer.scroll_into_view(target);
+            scene.flush(200.0, 600.0);
+            assert_eq!(receipt.result(), Some(Ok(())));
+            assert_eq!(inner.snapshot().offset, 160.0);
+            assert_eq!(
+                outer.snapshot().offset,
+                if height > 0.0 { 120.0 } else { 0.0 }
+            );
+            assert_eq!(scene.nodes[target].clip.height, height);
+            assert_eq!(scene.nodes[inner.id().unwrap()].clip.height, height);
+        }
+        let placements = scene.placements;
+        tab(&mut scene, false);
+        assert_eq!(scene.nodes[target].clip.height, height);
+        assert_eq!(scene.placements, placements);
+    }
+}
+
 #[test]
 fn no_op_offsets_do_not_layout_place_or_present_and_real_offsets_only_place() {
     let (mut scene, outer, inner) = nested();

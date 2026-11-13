@@ -62,6 +62,10 @@ Tab/Shift+Tab 保持 M2a 稳定有效树序。只在焦点**转移**时排队一
 
 目标比视口高时：若跨过视口两边，维持当前 offset；整体偏上时对齐其下边缘，整体偏下时对齐其上边缘，再 clamp。对零高视口、嵌套/非滚动祖先裁剪，仅承诺这个有限几何政策，不承诺不可能的完整可见，也不改变非滚动祖先的尺寸/clip。
 
+2026-11-13 P2 修复保留上述**每个局部视口**的超大目标政策：处理内层 offset 后，将目标纵向区间与该视口的可见区间求交，再平移到父坐标；外层只揭示剩余可显示片段，不携带已裁掉的原始高度。中间非滚动节点同样按自身布局高度求交，不取消它的裁剪；空区间停止向外揭示，区间高度不为负，也不反复改 offset。显式揭示与焦点揭示共用此路径。
+
+精确回归：outer 高 100、offset 0，内容为 spacer 200 + inner 高 40 + spacer 200，inner 的 target 高 200；先将 inner offset 设为 160 并提交。显式 outer reveal 或 Tab 后 inner 仍为 160、outer 为 140，inner 在窗口 y=60..100 完整可见，target 的最终 clip 与它相同且高 40；不再错误停在 outer offset 40、inner y=160..200。另测中间非滚动祖先仅允许 20 / 0 高片段时的最终 clip、重复命令不 churn，以及焦点揭示后的手动滚动不吸回。
+
 比例指示条在该 wrapper 子内容之后绘制，受同一 clip 约束：宽最多 4 逻辑像素，`thumb = viewport² / (viewport + max)`，位置随 `offset/max` 线性变化；无溢出不绘制。它是**非交互指示条**，不拦截命中、不可拖动、无伪节点/完整 scrollbar 语义或无障碍认证承诺，不引入主题。
 
 ## API 迁移
@@ -70,7 +74,7 @@ Tab/Shift+Tab 保持 M2a 稳定有效树序。只在焦点**转移**时排队一
 
 ## 验证与保留证据
 
-所有构建目标、临时目录、软件渲染缓存、原始二进制、脚本、日志与匹配窗口裁剪截图位于本工作树 `.local/verification/`（忽略提交，交协调者审阅后清理）。基线 88 unit + 4 doc；本轮 **111 unit + 4 doc 全通过**，增加 23 个直接滚动回归，未删除或弱化旧测试。
+所有构建目标、临时目录、软件渲染缓存、原始二进制、脚本、日志与匹配窗口裁剪截图位于本工作树 `.local/verification/`（忽略提交，交协调者审阅后清理）。基线 88 unit + 4 doc；P2 修复后 **114 unit + 4 doc 全通过**，其中 26 个直接滚动回归（原候选 23 + 本次 3），未删除或弱化旧测试。原候选 `9a71bf6` 的证据保持历史身份；协调者已发布相同内容为 `a355281fb7924b49ba23205684219639fb9ea26d` / PR #10，本次保留本地提交链，不 reset、push、认证或合并；仍待协调者复审与远端 CI，不宣告 M2b accepted。
 
 四个精确门禁均通过：
 
@@ -81,11 +85,23 @@ cargo test --workspace --locked
 cargo build --examples --locked
 ```
 
-本地设置 `CARGO_TARGET_DIR=$PWD/.local/verification/target`、`TMPDIR=$PWD/.local/verification/tmp`；日志为 `fmt.log / clippy.log / test.log / build-examples.log`。CI `.github/workflows/rust.yml` 保留同样四项，未声称远端已通过。
+修复后本地设置 `CARGO_TARGET_DIR=$PWD/.local/verification/target`、`TMPDIR=$PWD/.local/verification/postfix/tmp`；四个精确门禁日志为 `postfix/fmt.log / postfix/clippy.log / postfix/test.log / postfix/build-examples.log`，退出码见 `postfix/gates.tsv`。`postfix/regression-before.log` 记录修复前显式/Tab 两例均实际失败（outer 40 而非 140）；`postfix/scroll-tests.log` 记录修复后 26 项滚动测试通过。原根目录门禁日志不覆盖。CI `.github/workflows/rust.yml` 保留同样四项，未声称远端已通过。
 
 `src/scroll_tests.rs` 覆盖有限视口长内容、line/pixel/DPI/sign、嵌套部分余量与正反边界链、stop/prevent 分离、无指针、真实 hit 与捕获分离、内容隐藏/移除/文本缩短/重排/视口改尺寸 clamp、增长前 scroll_to、未 redraw 的新命中/clip、静止 hover、捕获坐标、Tab/反 Tab/安全 reveal、scope/foreign/stale/hidden/超大目标、旧焦点不吸回、offset-only placement、no-op/净零命令不 layout/present、可见文字/订阅与卸载/关闭句柄。
 
-真实图形路径是隔离 Xvfb + xdotool/XTest + Pillow，Vulkan llvmpipe；普通尺寸逻辑 760×520，实际裁剪为 1.0× 的 760×520 和 1.5× 的 1140×780；窄窗逻辑 410×650，分别裁剪 410×650 / 615×975。使用匹配窗口坐标裁剪，桌面外的黑色不纳入判断。`gui_setup.py / gui_checks.py / send_close.py` 保留实际操作与协议关闭路径，`bin/` 保留验证时原始二进制与 SHA256SUMS。
+### P2 修复后 GUI 复验
+
+2026-11-13，以最终源码重新通过四项精确门禁后保存 `postfix/bin/scroll_views`，SHA-256 为 `2622c11df6ac9dc3eceda3b849f53adb0592e8612aa12fa864e1ac8a209ef5b2`。`postfix/bin/SHA256SUMS`、`postfix/SOURCE_SHA256SUMS` 与 `postfix/provenance.json` 绑定二进制、两份修改后 Rust 源码及本地父提交 `9a71bf6`；不是把旧二进制或旧截图标为本次证据。
+
+复用未修改的 `gui_setup.py / gui_checks.py / send_close.py`，由 `postfix/replay.py` 将运行目录及二进制切到 `postfix/`；隔离 Xvfb + XTest + Pillow / Vulkan CPU adapter，两种 DPI **各 16/16 项通过**，包含显式 reveal、Tab/Shift+Tab 嵌套揭示、缩减 clamp、窄窗中文重排与恢复、滚轮链/no-op/idle。结果分别为 `postfix/gui-1x/checks.json`、`postfix/gui-1_5x/checks.json`，每组保留新 `app.log / screenshots.tsv / initial.png / run1-*.png`。原 1×、1.5× 与 M1c 记录和二进制均不覆盖；本次不重跑大型 M1 压测或 M1c GUI 烟测。
+
+已查看两种 DPI 的 Tab、反向 Tab、显式外层 20 行、缩减及窄窗截图（本地 `postfix/visual-review.png` 汇总）；并核验全部新截图哈希，见 `postfix/evidence-check.log`。两次应用均经 WM_DELETE_WINDOW 正常退出 0（约 36ms / 31ms）；独立服务器随后停止，`postfix/gui-*/cleanup.json` 记录两端均已终止，未操作宿主应用。仍是软件渲染/X11 的有限 GUI 复验，不代表原生 Wayland 或 GPU 资格；精确超大目标组合由上述几何回归验证，不声称演示 GUI 包含该 200/40/100 用例。
+
+### 历史候选 GUI 证据（修复前）
+
+以下记录对应原候选二进制，不是修复后运行。原 `bin/scroll_views` SHA-256 为 `10839163d41b049bb1ca7efe6350dec8f2972536bf755a9e09d2870e40a5c9f7`，`bin/background_messages` 为 `851f496666d76f4b5f549321d69a1c211e4e0b33cf33564aa4340aee3580d8af`，本次未覆盖，校验仍通过。
+
+真实图形路径是隔离 Xvfb + xdotool/XTest + Pillow，Vulkan llvmpipe；普通尺寸逻辑 760×520，实际裁剪为 1.0× 的 760×520 和 1.5× 的 1140×780；窄窗逻辑 410×650，分别裁剪 410×650 / 615×975。使用匹配窗口坐标裁剪，桌面外的黑色不纳入判断。`gui_setup.py / gui_checks.py / send_close.py` 保留实际操作与协议关闭路径，`bin/` 保留原候选验证时原始二进制与 SHA256SUMS。
 
 两种 DPI 各 **16 项 GUI 检查通过**：内层先滚、移动后点中内层 02 行且独立计数 +1、部分/到边界链、reset、prevent、Tab/Shift+Tab、显式外层 20 行、动态缩减 clamp、窄窗中文重排、外层边界/no-op、idle 和无 panic。证据为 `gui-1x/checks.json` 与 `gui-1_5x/checks.json`，原始 `app.log`、`screenshots.tsv` 及 PNG；1× 完整成功序列 `run2-*`，1.5× 为 `run1-*`。人工查看移动点击、反向 Tab、显式揭示、缩减、窄窗与 1.5× 对应截图，不仅检查文件存在。
 

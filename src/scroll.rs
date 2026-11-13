@@ -228,9 +228,12 @@ impl Scene {
         let mut changed = false;
         let layout = self.tree.layout(self.nodes[target].layout_id).unwrap();
         let mut top = layout.location.y;
-        let height = layout.size.height;
+        let mut height = layout.size.height;
         let mut parent = self.nodes[target].parent;
         while let Some(id) = parent {
+            if height <= 0.0 {
+                break;
+            }
             if let Some(scroll) = &self.nodes[id].scroll {
                 let bottom = top + height;
                 let offset = scroll.offset;
@@ -255,15 +258,14 @@ impl Scene {
                 changed |= self.set_offset(id, next);
                 top -= self.nodes[id].scroll.as_ref().unwrap().offset;
             }
+            let layout = self.tree.layout(self.nodes[id].layout_id).unwrap();
+            let bottom = (top + height).min(layout.size.height);
+            top = top.max(0.0);
+            height = (bottom - top).max(0.0);
             if scope == Some(id) {
                 break;
             }
-            top += self
-                .tree
-                .layout(self.nodes[id].layout_id)
-                .unwrap()
-                .location
-                .y;
+            top += layout.location.y;
             parent = self.nodes[id].parent;
         }
         changed
