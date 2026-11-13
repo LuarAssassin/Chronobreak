@@ -23,6 +23,7 @@ cargo run --example background_messages --locked
 cargo run --example input_routing --locked
 cargo run --example scroll_views --locked
 cargo run --example text_input --locked
+cargo run --example native_ime --locked
 ```
 
 需要可访问的 X11 或 Wayland 会话；无独立 GPU 时可以使用 Mesa 的 Vulkan 软件适配器。中文依赖系统 CJK 字体回退；不内嵌或重新分发字体。依赖版本以提交的 `Cargo.lock` 为准，glyphon 0.9 与 wgpu 25 / cosmic-text 0.14 配套使用。
@@ -31,7 +32,7 @@ cargo run --example text_input --locked
 
 ### 文字编辑
 
-`TextEditModel` 提供字符簇/词、定向 selection、有限历史与程序替换，合同见 [逻辑文字模型](docs/text-edit-model.md)；`text_model` 是无需桌面的真实 CLI 调用者。`Element::text_input(&Signal<String>)` 接入单行编辑、受控同步、选区/光标与异步系统剪贴板；API、换行政策、闪烁和实测边界见 [单行输入](docs/text-input.md)。不宣称多行编辑器、完整视觉 bidi 或原生 IME。
+`TextEditModel` 提供字符簇/词、定向 selection、有限历史与程序替换，合同见 [逻辑文字模型](docs/text-edit-model.md)；`text_model` 是无需桌面的真实 CLI 调用者。`Element::text_input(&Signal<String>)` 接入单行编辑、受控同步、选区/光标与异步系统剪贴板，见 [单行输入](docs/text-input.md)；原生 composition 合同、X11/Fcitx5 真实引擎复验与 IBus 已知限制见 [原生 IME](docs/native-ime.md)。共 11 个 Cargo examples，含仅验证用的独立 `ime_clipboard_reader`，其 tracked 构建命令与必需 clipboard 门禁见同文。不宣称多行编辑器或完整视觉 bidi；当前资格结论只见 [Alpha 状态](docs/alpha-delivery-status.md)。
 
 ### 输入交互（M2a，已合入 PR #9）
 

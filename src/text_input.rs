@@ -9,7 +9,7 @@ use std::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 use winit::{
-    event::ElementState,
+    event::{ElementState, Ime},
     keyboard::{Key, NamedKey},
 };
 
@@ -31,9 +31,21 @@ pub(super) struct Editor {
     affinity: Affinity,
     caret_visible: bool,
     deadline: Option<Instant>,
+    pub ime_session: u64,
+    composition: Option<Composition>,
+}
+
+struct Composition {
+    selection: crate::Selection,
+    text: String,
+    cursor: Option<(usize, usize)>,
 }
 
 impl Editor {
+    pub(super) fn has_pending_ime(&self) -> bool {
+        self.composition.is_some()
+    }
+
     pub fn new(signal: Signal<String>, text: &str, readonly: bool) -> Self {
         Self {
             model: TextEditModel::new(text),
@@ -45,11 +57,15 @@ impl Editor {
             affinity: Affinity::Before,
             caret_visible: false,
             deadline: None,
+            ime_session: 0,
+            composition: None,
         }
     }
 
     pub fn invalidate(&mut self) {
         self.epoch += 1;
+        self.ime_session += 1;
+        self.composition = None;
         self.dragging = false;
         self.deadline = None;
         self.caret_visible = false;
@@ -65,6 +81,43 @@ impl Editor {
         self.epoch += 1;
         self.caret_visible = true;
         self.deadline = Some(Instant::now() + BLINK_INTERVAL);
+    }
+
+    fn display(&self) -> String {
+        let Some(composition) = &self.composition else {
+            return self.model.text().to_owned();
+        };
+        if composition.text.is_empty() {
+            return self.model.text().to_owned();
+        }
+        let range = composition.selection.range();
+        format!(
+            "{}{}{}",
+            &self.model.text()[..range.start],
+            composition.text,
+            &self.model.text()[range.end..]
+        )
+    }
+
+    fn display_selection(&self) -> Range<usize> {
+        if let Some(composition) = &self.composition
+            && !composition.text.is_empty()
+        {
+            let start = composition.selection.range().start;
+            return composition.cursor.map_or(start..start, |(anchor, focus)| {
+                start + anchor.min(focus)..start + anchor.max(focus)
+            });
+        }
+        self.model.selection().range()
+    }
+
+    fn display_caret(&self) -> Option<usize> {
+        match &self.composition {
+            Some(composition) if !composition.text.is_empty() => composition
+                .cursor
+                .map(|(_, focus)| composition.selection.range().start + focus),
+            _ => Some(self.model.selection().focus()),
+        }
     }
 }
 
@@ -157,6 +210,11 @@ impl Geometry {
             .iter()
             .find(|stop| stop.index == index && stop.affinity == affinity)
             .or_else(|| self.stops.iter().find(|stop| stop.index == index))
+            .or_else(|| {
+                self.stops
+                    .iter()
+                    .min_by_key(|stop| stop.index.abs_diff(index))
+            })
             .map_or(0.0, |stop| stop.x)
     }
 
@@ -199,6 +257,145 @@ pub(super) struct ClipboardService {
 }
 
 impl Scene {
+    pub(crate) fn ime_target(&self) -> Option<(NodeId, u64)> {
+        let id = self.interaction.focused?;
+        let editor = self.nodes.get(id)?.editor.as_ref()?;
+        (self.enabled(id) && !editor.readonly).then_some((id, editor.ime_session))
+    }
+
+    pub(crate) fn ime(&mut self, event: Ime) {
+        self.sync();
+        if event == Ime::Disabled {
+            self.ime_ready = false;
+            self.cancel_ime();
+            return;
+        }
+        if self.ime_owner.is_none() || self.ime_owner != self.ime_target() {
+            return;
+        }
+        if event == Ime::Enabled {
+            self.ime_ready = true;
+            return;
+        }
+        if !self.ime_ready {
+            return;
+        }
+        let id = self.ime_owner.unwrap().0;
+        self.refresh_controlled(id);
+        if self.ime_owner != self.ime_target() {
+            return;
+        }
+        let editor = self.nodes[id].editor.as_mut().unwrap();
+        match event {
+            Ime::Preedit(text, cursor) => {
+                if text.chars().any(char::is_control)
+                    || single_line(&text) != text
+                    || cursor.is_some_and(|(anchor, focus)| {
+                        !text.is_char_boundary(anchor) || !text.is_char_boundary(focus)
+                    })
+                {
+                    self.cancel_ime();
+                    return;
+                }
+                let composition = editor.composition.get_or_insert_with(|| Composition {
+                    selection: editor.model.selection(),
+                    text: String::new(),
+                    cursor: None,
+                });
+                composition.text = text;
+                composition.cursor = cursor;
+                editor.restart();
+                let composing = !composition_is_empty(editor);
+                self.composing(composing);
+                self.refresh_ime_display();
+            }
+            Ime::Commit(text) => {
+                if let Some(composition) = editor.composition.take() {
+                    editor
+                        .model
+                        .set_selection(
+                            composition.selection.anchor(),
+                            composition.selection.focus(),
+                        )
+                        .unwrap();
+                }
+                if !text.is_empty() {
+                    editor.model.replace_selection(&single_line(&text));
+                }
+                self.composing(false);
+                self.finish_text_action(id);
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn cancel_ime(&mut self) {
+        if let Some((id, _)) = self.ime_owner
+            && let Some(editor) = self.nodes.get_mut(id).and_then(|node| node.editor.as_mut())
+        {
+            editor.invalidate();
+        }
+        self.composing(false);
+        self.refresh_ime_display();
+    }
+
+    pub(super) fn refresh_ime_display(&mut self) {
+        let ids: Vec<_> = self
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                node.editor
+                    .as_ref()
+                    .map(|_| self.tree.get_node_context(node.layout_id).copied().unwrap())
+            })
+            .collect();
+        for id in ids {
+            let text = self.nodes[id].editor.as_ref().unwrap().display();
+            let node = &mut self.nodes[id];
+            if node.text.as_ref() == Some(&text) {
+                continue;
+            }
+            node.buffer.as_mut().unwrap().set_text(
+                &mut self.fonts,
+                &text,
+                &Attrs::new().family(Family::SansSerif),
+                Shaping::Advanced,
+            );
+            node.text = Some(text);
+            node.revision += 1;
+            self.tree.mark_dirty(node.layout_id).unwrap();
+            self.dirty.text_measurement = true;
+            self.present_needed = true;
+        }
+    }
+
+    pub(crate) fn ime_cursor_area(&self) -> Option<Bounds> {
+        let (id, _) = self.ime_target()?;
+        let node = &self.nodes[id];
+        let editor = node.editor.as_ref()?;
+        let (origin, clip) = self.text_geometry(id);
+        if clip.width <= 0.0 || clip.height <= 0.0 {
+            return None;
+        }
+        let geometry = Geometry::new(node.buffer.as_ref()?, node.text.as_deref()?);
+        let caret_x = origin.0
+            + geometry.caret(
+                editor
+                    .display_caret()
+                    .unwrap_or_else(|| editor.display_selection().start),
+                editor.affinity,
+            );
+        let width = 1.5_f32.min(clip.width);
+        let y = origin.1.max(clip.y);
+        let height = (origin.1 + geometry.height).min(clip.y + clip.height) - y;
+        (height > 0.0).then_some(Bounds {
+            x: caret_x.clamp(clip.x, clip.x + clip.width - width),
+            y,
+            width,
+            height,
+        })
+    }
+
     pub(super) fn text_focus_changed(&mut self, previous: Option<NodeId>, next: Option<NodeId>) {
         for id in previous.into_iter().chain(next) {
             if let Some(editor) = self.nodes.get_mut(id).and_then(|node| node.editor.as_mut()) {
@@ -237,6 +434,10 @@ impl Scene {
         {
             self.set_capture(None);
         }
+        if self.ime_owner.is_some() && self.ime_owner != self.ime_target() {
+            self.composing(false);
+        }
+        self.refresh_ime_display();
     }
 
     pub(crate) fn update_blink(&mut self, now: Instant, drawable: bool) {
@@ -303,8 +504,13 @@ impl Scene {
         let Some(editor) = &mut node.editor else {
             return;
         };
-        let geometry = Geometry::new(node.buffer.as_ref().unwrap(), editor.model.text());
-        let caret = geometry.caret(editor.model.selection().focus(), editor.affinity);
+        let geometry = Geometry::new(node.buffer.as_ref().unwrap(), node.text.as_deref().unwrap());
+        let caret = geometry.caret(
+            editor
+                .display_caret()
+                .unwrap_or_else(|| editor.display_selection().start),
+            editor.affinity,
+        );
         let width = (node.bounds.width - 2.0 * INSET - 2.0).max(0.0);
         let offset = editor.offset;
         if caret < editor.offset {
@@ -324,6 +530,7 @@ impl Scene {
         editor.restart();
         let text = editor.model.text().to_owned();
         let signal = editor.signal.clone();
+        let publish = single_line(&signal.get()) != text;
         let changed = node.text.as_deref() != Some(&text);
         if changed {
             node.buffer.as_mut().unwrap().set_text(
@@ -339,7 +546,7 @@ impl Scene {
             self.commit_version += 1;
         }
         self.present_needed = true;
-        if changed {
+        if publish {
             signal.update(|value| *value = text);
         }
     }
@@ -483,6 +690,9 @@ impl Scene {
             return;
         }
         self.refresh_controlled(id);
+        if self.nodes[id].editor.as_ref().unwrap().has_pending_ime() {
+            self.cancel_ime();
+        }
         let Some((x, y)) = position else {
             return;
         };
@@ -527,9 +737,28 @@ impl Scene {
             return;
         }
         let (origin, clip) = self.text_geometry(id);
-        let geometry = Geometry::new(node.buffer.as_ref().unwrap(), editor.model.text());
-        let selected = editor.model.selection().range();
+        let geometry = Geometry::new(node.buffer.as_ref().unwrap(), node.text.as_deref().unwrap());
+        let selected = editor.display_selection();
+        let underline = editor.composition.as_ref().map(|composition| {
+            let start = composition.selection.range().start;
+            start..start + composition.text.len()
+        });
         for span in geometry.spans {
+            if underline
+                .as_ref()
+                .is_some_and(|range| span.range.start < range.end && span.range.end > range.start)
+            {
+                paints.push(Paint::Rect {
+                    bounds: Bounds {
+                        x: origin.0 + span.x,
+                        y: origin.1 + geometry.height - 2.0,
+                        width: span.width,
+                        height: 1.0,
+                    },
+                    clip,
+                    color: [1.0, 0.85, 0.4, 1.0],
+                });
+            }
             if span.range.start < selected.end && span.range.end > selected.start {
                 paints.push(Paint::Rect {
                     bounds: Bounds {
@@ -558,10 +787,13 @@ impl Scene {
             return;
         }
         let (origin, clip) = self.text_geometry(id);
-        let geometry = Geometry::new(node.buffer.as_ref().unwrap(), editor.model.text());
+        let Some(caret) = editor.display_caret() else {
+            return;
+        };
+        let geometry = Geometry::new(node.buffer.as_ref().unwrap(), node.text.as_deref().unwrap());
         paints.push(Paint::Rect {
             bounds: Bounds {
-                x: origin.0 + geometry.caret(editor.model.selection().focus(), editor.affinity),
+                x: origin.0 + geometry.caret(caret, editor.affinity),
                 y: origin.1,
                 width: 1.5,
                 height: geometry.height,
@@ -572,6 +804,9 @@ impl Scene {
     }
 
     fn request_clipboard(&mut self, id: NodeId, action: ClipboardAction) {
+        if self.nodes[id].editor.as_ref().unwrap().has_pending_ime() {
+            self.cancel_ime();
+        }
         let editor = self.nodes[id].editor.as_ref().unwrap();
         if action != ClipboardAction::Paste && editor.model.selection().is_collapsed() {
             return;
@@ -692,6 +927,13 @@ impl Scene {
         editor.model.replace_selection(&normalized);
         self.finish_text_action(id);
     }
+}
+
+fn composition_is_empty(editor: &Editor) -> bool {
+    editor
+        .composition
+        .as_ref()
+        .is_none_or(|composition| composition.text.is_empty())
 }
 
 #[cfg(test)]

@@ -364,6 +364,8 @@ pub(crate) struct Scene {
     focus_reveal: Option<NodeId>,
     pub placements: u64,
     clipboard: Option<text_input::ClipboardService>,
+    pub(crate) ime_owner: Option<(NodeId, u64)>,
+    pub(crate) ime_ready: bool,
 }
 
 #[derive(Debug, Default)]
@@ -418,6 +420,8 @@ impl Scene {
             focus_reveal: None,
             placements: 0,
             clipboard: None,
+            ime_owner: None,
+            ime_ready: false,
         };
         scene.root = Some(scene.mount(element));
         scene

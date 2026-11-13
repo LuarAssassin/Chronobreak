@@ -470,7 +470,7 @@ CI 的精确 job 名为 `Rust checks`；新增平台/图形 job 应各自注明�
 
 **进展与授权入口**：[Alpha 状态](alpha-delivery-status.md)。以下为推进顺序与持续约束，不另维护候选状态副本，不增加逐步实施授权要求：
 
-1. **衔接文字输入与原生 IME**：当前合入/候选与后续门禁只见 [Alpha 状态](alpha-delivery-status.md)；模型合同见 [文字模型](text-edit-model.md)，控件合同见 [单行输入](text-input.md)。保留 M2a/M2b 路由、滚动与焦点揭示回归，不将逻辑编辑或系统剪贴板称为原生 IME 完成。
+1. **衔接文字输入与原生 IME**：当前合入/候选与后续门禁只见 [Alpha 状态](alpha-delivery-status.md)；模型合同见 [文字模型](text-edit-model.md)，控件合同见 [单行输入](text-input.md)，原生会话/候选坐标合同及复验见 [原生 IME](native-ime.md)。保留 M2a/M2b 路由、滚动与焦点揭示回归，不将逻辑编辑或系统剪贴板称为原生 IME 完成。
 2. **保留 M1a/M1b/M1c 回归**：持续验证旧 ID/旧松开、同 key 重建、通知版本/flush、keyed 重排、布局变更后紧接输入及有界消息公平性/关闭；历史验收已合入，不列为尚未开始。派生菱形仍是条件扩展。
 3. **Linux 探针与 M2/M3**：按已选 X11 优先资格、Wayland 实验性细化字体/DPI、输入法/设备矩阵，Xvfb 用于确定性回归而非原生系统完成证明；M3 单行编辑/真实 IME 保留 Alpha 目标。Windows/macOS 仅保留架构可移植性，未实测。
 4. **工作台首切片 M5a**：可先细化版本化 JSON schema/持久化合同与无私人资料 fixture，再按独立功能分支推进实现；M5b 等 M1/M2/M4 最小节点、连接线、裁剪/主题 API 到位后做自动布局与折叠，不先造自由画布或多行编辑器。

@@ -33,7 +33,7 @@ fn main() -> Result<()> {
     );
     let root = Element::column().padding(12.0).gap(8.0)
         .child(Element::text("Single-line TextInput · M3B candidate").font_size(22.0))
-        .child(Element::text("Ctrl+A/C/X/V/Z/Y · Shift+arrows · Home/End · Tab\nNative IME/preedit: M3C, not verified").font_size(14.0))
+        .child(Element::text("Ctrl+A/C/X/V/Z/Y · Shift+arrows · Home/End · Tab\nNative IME: see native_ime example and docs/native-ime.md").font_size(14.0))
         .child(Element::text_input(&value).readonly_when(&readonly).disabled_when(&disabled)
             .background([0.08, 0.13, 0.20, 1.0]))
         .child(Element::bound_text(&value, |value| format!("Controlled sync: {} bytes · two fields, one Signal", value.len())).font_size(14.0))

@@ -13,6 +13,7 @@
 - [M2b 纵向视口](scroll-views.md)：PR #10 已合入；独立测量、偏移/裁剪、滚轮链与焦点揭示。
 - [M3A 逻辑文字模型](text-edit-model.md)：字符簇/词、定向选择、有限历史与外部值替换合同。
 - [单行输入](text-input.md)：受控 Signal、整形选区、系统剪贴板与空闲调度。
+- [原生 IME](native-ime.md)：composition/session 合同、tracked reader 构建、X11/Fcitx5 回归与 IBus 已知限制。
 - [Alpha 交付状态](alpha-delivery-status.md)：连续 M3—M7 授权、已合入基线、当前候选与门禁。
 - [协作与分支](../CONTRIBUTING.md)：分支、agent 隔离、验证与合并约定。
 

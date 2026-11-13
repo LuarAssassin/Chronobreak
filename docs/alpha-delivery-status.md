@@ -3,14 +3,30 @@
 2026-11-13；本页是**当前进展的唯一权威入口**，集中维护合入/候选状态、执行授权与交付门禁；[技术路线](technical-roadmap.md) 保留历史分析、依赖和验收合同，不维护另一份当前候选清单。本页不替代私有执行计划、决策文件或独立审查。
 
 - **连续授权**：用户于 `2026-11-13T13:40:27.621Z` 明确授权持续推进剩余 M3—M7；M3A 是其中一个实现块，不是停止点。普通实现无需逐步等待“继续”，仍须通过受保护 PR、独立审查与强制门禁；方向变化、未决业务合同和访问条件仍需确认。协调者负责后续编排、审查、合并及远端发布；本次 FB-1 文档修正不修改执行计划、不推送或合并。
-- **已合入基线**：M1a/M1b/M1c（PR #6/#7/#8）、M2a（PR #9）、M2b 初始纵向视口（PR #10）及 **M3A 逻辑编辑模型（PR #11）**；当前基线 `245f8eacca6b08f5838e1370e17aba274c993b75`，150 unit + 5 doc。模型合同见 [文字模型](text-edit-model.md)，不代表整个 M3 或全平台资格已完成。
-- **当前候选**：`feat/text-input` 的 **M3B:B1 单行 TextInput**，受控 Signal、整形选区/caret、私有水平揭示、readonly/disabled、异步系统剪贴板与聚焦 deadline，见 [单行输入](text-input.md)。FB-2 修正有效内容 clip 的 blink eligibility，本地四项门禁与独立复审已通过；双 DPI 完整 GUI/剪贴板结果属历史 `3d0f6af`，补充新二进制直接 XTEST 的 clip/restore 已在两 DPI 成功验证，见下表与末段。最初 Cua/无 WM 方法限制保留为历史失败，不再作为当前缺口。最终 CI/集成状态以对应 PR 与执行计划为准，不将本地提交称为整个 Alpha 完成。
-- **后续未完成**：M3B 审查/合并及 M3C 原生 IME/preedit/commit/候选定位；M4 视觉/主题/最小控件；M5 应用闭环；M6 性能/资源/无障碍/平台资格；M7 打包/许可落地及全部门禁后的发布。多行编辑器、通用横向滚动、完整视觉 bidi 不在本单行块交付内。
+- **已合入基线**：M1a/M1b/M1c（PR #6/#7/#8）、M2a（PR #9）、M2b 初始纵向视口（PR #10）、M3A 逻辑编辑模型（PR #11）及 **M3B 单行 TextInput / FB-2（PR #12）**；基线 `8d77b643271e341895d72911715479bb56447dde`，176 unit + 6 doc。合同见 [文字模型](text-edit-model.md)、[单行输入](text-input.md)；不代表整个 M3 或全平台资格已完成。
+- **当前候选**：`feat/native-ime` 的 **M3C:B1 原生 IME / FB-3 reproducibility P2**，实现合同见 [原生 IME](native-ime.md)。正式 Linux X11 资格限于 **Ubuntu 26.04.1 amd64 + winit 0.30.13/XIM + Fcitx5 5.1.19-1 + Pinyin 5.1.12-1/libime 1.1.14-1 + classic UI**：真实 XTEST、1.0× / 1.5× 各 **14/14**，含可见系统候选在嵌套滚动、同窗移动、重排后无额外击键跟随；外部 clipboard reader 2/2。原生运行时/真实 Fcitx5 证明已通过本轮审查；新 helper/harness 提交 `ba9cd362e6c895ed34916eb756c2b4b703089865` 的 tracked-only archive 再次构建正式 example 与 reader，clean harness `c1`/`c2` 均 exit 0、各 14/14、clipboard 2/2。四项精确 Rust 门禁通过，192 unit + 6 doc 不变，现共 11 examples。**IBus 1.5.34~rc2-1/libpinyin 仍各 11/14，原三项失败未修复**；不声称通用 IME 或 Wayland 资格。运行时代码与 `b3666b6` 相同，FB-3 只改验证工具和文档；该修正待复审，未合并。
+- **后续未完成**：M3C 独立审查/合并及其他 engine/backend 的资格；M4 视觉/主题/最小控件；M5 应用闭环；M6 性能/资源/无障碍/平台资格；M7 打包/许可落地及全部门禁后的发布。父协调者可依据上述窄 tuple 继续后续就绪块，不把 IBus 已知局限当成整个 Alpha 停止条件；多行编辑器、通用横向滚动、完整视觉 bidi 不在本单行块交付内。
 - **已确认决策**：用户委托后由协调者选择 **MIT OR Apache-2.0**、**Linux X11 优先资格 / Wayland 实验性**；平台资格仍需对应实测，实际许可文件留 M7 打包块落地，尚不宣称已实施。首接服务仅 **DeepSeek Flash**（路线已登记官方 `https://api.deepseek.com`、OpenAI chat 格式与 `deepseek-flash`）；这是接入方向，不是可用性验证。以上委托及确认由本次 FB-1 任务回填，主题沿用既定方向，无新增产品范围。
 - **凭据与验证边界**：原始 key 仅留私有 `.env`，空值由 owner 填写；尚无真实网络调用证明。本次 M3B 不读取 `.env`/密钥，不连接模型服务、不改 provider/全局设置；不将服务决策当作 key/服务已验证，不将许可证选择当作许可文件已落地。原文再发布与用户桌面设置不在本次授权内。
 - **发布条件**：用户已授权仅在**全部强制门禁通过后发布 GitHub Alpha prerelease**，不是提前放行、正式版或 crates.io 发布授权；本次 FB-1 任务回填该条件，不宣称任何发布已经执行。
 
-## 本块验证
+## M3C 候选验证
+
+2026-11-13，隔离工作树 `.worktrees/native-ime`，main 未改动；全部产物在该工作树 `.local/verification/`。没有调用计划 CLI、委派、推送、鉴权或合并，也没有切换/停止 owner 桌面 IBus。
+
+| 门禁 | 结果 | 证据入口 |
+| --- | --- | --- |
+| fmt / strict workspace all-targets clippy / locked workspace test / locked examples build | FB-3 clean archive 四项通过；192 unit + 6 doc，11 examples | `fb3/gates.json`、`fb3/gate-*.log`；历史 `gates.json`、`gate-*.log` 保留 |
+| tracked reader + 正式 native example 构建 / Python prerequisite | 提交 `ba9cd36` 的 58 tracked 文件归档；两个 locked build 通过；缺失/不可执行 reader 在普通/`-O` 均 exit 2 | `fb3/archive.json`、`fb3/build-{reader,native}.log`、`fb3/python-checks.json`、`fb3/reader-race.json` |
+| IBus X11 libpinyin：preedit、单次中文 commit/undo/redo、Esc、Latin 混合、双字段/卸载隔离、实际滚动与初始系统候选锚点 | 两 DPI 各 11/14；不是完整资格通过 | `x8/`（1.0×）、`x9/`（1.5×）的 `checks.json`、PNG/geometry/model/event/operation trace |
+| IBus 系统候选在嵌套滚动、同窗 move、resize/reflow 后即时跟随 | 两 DPI 各三项失败；独立 async XIM 替代也未解决 | `x6/cursor-protocol.log`、`x8/13-*`、`x8/15-*`、`x8/16-*`、`x4/` |
+| 独立外部进程读取真实 GUI copy 文本 | 两 DPI 2/2 通过，不注入模型 | `x8/clipboard-reader.json`、`x9/clipboard-reader.json` |
+| 独立真实 Fcitx5 XIM/Pinyin/classic UI；上述全部行为与可见候选跟随 | clean tracked harness 的 `c1`/`c2` 各 **14/14**、entrypoint exit 0；正式资格仅此 tuple | `c1/`、`c2/` 的 `checks.json`、PNG、events/Signal/geometry；历史 `f4`—`f9` 保留 |
+| Fcitx5 独立 clipboard reader / 进程与库来源 | 两 DPI 2/2；新 reader/app binary 与归档 source/probe hash 均匹配；5357 既有文件 hash 不变，自有进程/socket 已清理 | `c1/clipboard-reader.json`、`c2/clipboard-reader.json`、两 run 的 `provenance.json`/`source-hashes.json`；汇总 `fb3/qualification.json`，历史官方 `native-stack/{package,source}-manifest.json` 保留 |
+
+复验程序、具体差值、系统版本、源/二进制/操作哈希与 IBus 余留限制见 [原生 IME](native-ime.md)。X11 的上述 Fcitx5 tuple 通过全部原生门禁，不等于修复 IBus；原生 Wayland 实验性且未实测，跨平台及 engine-agnostic winit 架构不变，不声称 Windows/macOS 资格或整个 Alpha 完成。
+
+## M3B 历史验证
 
 2026-11-13，M3B 隔离工作树 `.worktrees/text-input`；构建、临时目录和全部产物置于本工作树 `.local/verification/`。仅下载所需文字剪贴板依赖，不连接业务/模型服务：
 
@@ -24,6 +40,6 @@
 | `python3 .local/verification/blink-clip/gui_verify.py` | 历史 Cua 尝试：两 DPI 初始渲染，resize/foreground 方法限制；原证据保留，不作为外部阻塞 | `blink-clip/gui-command.log`、`blink-clip/gui-summary.json`、`blink-clip/cua-calls.jsonl` |
 | `python3 .local/verification/blink-clip/xtest-attempt/verify.py` | FB-2 直接 XTEST：1.0× / 1.5× 同窗宽 8、高 4 逻辑像素均停帧 1.35s；焦点不丢，恢复 blink 且 layout/format 不变 | `blink-clip/xtest-attempt/{summary,provenance}.json`、`native-calls.jsonl`、`app-*.log`、16 PNG |
 
-首次 Clippy 的可折叠 if 已修正，早期日志保留；测试构造错误和继承 Wayland 变量导致的 GUI 首次启动失败均已定位修正，并非跳过。真实验证是专用 Xvfb / NVIDIA Vulkan，两个 DPI 各自查询窗口几何并裁图；外部 writer 持有 X11 owner，独立 reader 逐字核对字段 copy/cut/Unicode paste。闪烁无文字重排，原生 X11 全遮挡/失焦停止帧；详细合同、逐项证据及限制见 [单行输入](text-input.md)。原生 IME、Wayland、Windows/macOS 与真实 GPU 故障仍未验证。未推送、鉴权、合并或修改 main；父协调者继续审查与后续块。
+首次 Clippy 的可折叠 if 已修正，早期日志保留；测试构造错误和继承 Wayland 变量导致的 GUI 首次启动失败均已定位修正，并非跳过。真实验证是专用 Xvfb / NVIDIA Vulkan，两个 DPI 各自查询窗口几何并裁图；外部 writer 持有 X11 owner，独立 reader 逐字核对字段 copy/cut/Unicode paste。闪烁无文字重排，原生 X11 全遮挡/失焦停止帧；详细合同、逐项证据及限制见 [单行输入](text-input.md)。该历史验收未覆盖原生 IME、Wayland、Windows/macOS 与真实 GPU 故障；后续 IME 证据见本页 M3C 记录。其当时未推送、鉴权、合并或修改 main；后续集成状态以本页顶部为准。
 
 FB-2 两项新回归已先复现失败，再验证修正：正外框/零宽内容及 scroll ancestor 仅剩 1–4px padding，均停止 deadline/持续 present，恢复后 blink 不增加 layout/format。补充真实 XTEST 根字段 probe 确认窗口 8×520 / 12×780、760×4 / 1140×6：两 DPI 停帧分别 11→11、19→19，恢复分别 14→17、22→25，layout/format 保持 5/2、7/2。原证据与 `blink-clip/source-manifest.json` 不覆盖，后续成功及启动焦点断言误报另见 `xtest-attempt/provenance.json`；全部自有进程已停止，无运行时代码变化。这里只交付 scoped P2 修正，不宣布整个连续任务完成，不操作父协调者计划 CLI。

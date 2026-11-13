@@ -8,9 +8,10 @@ use std::{
 };
 use winit::{
     application::ApplicationHandler,
-    dpi::{LogicalSize, PhysicalPosition},
+    dpi::{LogicalPosition, LogicalSize, PhysicalPosition},
     event::{ElementState, Ime, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    raw_window_handle::{HasWindowHandle, RawWindowHandle},
     window::{CursorIcon, Window, WindowId},
 };
 
@@ -93,6 +94,8 @@ pub struct Application {
     trace: bool,
     redraw_schedule: RedrawSchedule,
     messages_ready: bool,
+    ime_disabling: bool,
+    ime_geometry: Option<(crate::ui::Bounds, PhysicalPosition<i32>, f64)>,
 }
 
 impl Application {
@@ -108,6 +111,8 @@ impl Application {
             trace: std::env::var_os("CHRONOBREAK_TRACE").is_some(),
             redraw_schedule: RedrawSchedule::default(),
             messages_ready: false,
+            ime_disabling: false,
+            ime_geometry: None,
         }
     }
 
@@ -169,6 +174,82 @@ impl Application {
         }
         Ok(())
     }
+
+    fn sync_ime(&mut self) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        let target = self.scene.ime_target();
+        if self.scene.ime_owner.is_some() && self.scene.ime_owner != target {
+            self.scene.cancel_ime();
+            self.scene.ime_owner = None;
+            self.scene.ime_ready = false;
+            self.ime_disabling = true;
+            self.ime_geometry = None;
+            window.set_ime_allowed(false);
+            wake_ime_requests(window, &self.title);
+        } else if !self.ime_disabling && self.scene.ime_owner.is_none() && target.is_some() {
+            self.scene.ime_owner = target;
+            self.scene.ime_ready = false;
+            window.set_ime_allowed(true);
+            wake_ime_requests(window, &self.title);
+        }
+        if self.scene.ime_ready
+            && self.scene.ime_owner == self.scene.ime_target()
+            && let Some(area) = self.scene.ime_cursor_area()
+        {
+            let x11 = window.window_handle().is_ok_and(|handle| {
+                matches!(
+                    handle.as_raw(),
+                    RawWindowHandle::Xlib(_) | RawWindowHandle::Xcb(_)
+                )
+            });
+            let origin = window.outer_position().unwrap_or_default();
+            let geometry = (area, origin, window.scale_factor());
+            if self.ime_geometry == Some(geometry) {
+                return;
+            }
+            if x11
+                && self
+                    .ime_geometry
+                    .is_some_and(|(_, previous, _)| previous != origin)
+            {
+                window.set_ime_cursor_area(
+                    candidate_position(area, false),
+                    LogicalSize::new(area.width as f64, area.height as f64),
+                );
+            }
+            let position = candidate_position(area, x11);
+            window.set_ime_cursor_area(
+                position,
+                LogicalSize::new(area.width as f64, area.height as f64),
+            );
+            self.ime_geometry = Some(geometry);
+            wake_ime_requests(window, &self.title);
+            if self.trace {
+                eprintln!("ime_area logical={area:?} scale={}", window.scale_factor());
+            }
+        }
+    }
+}
+
+fn candidate_position(area: crate::ui::Bounds, x11: bool) -> LogicalPosition<f64> {
+    LogicalPosition::new(
+        area.x as f64,
+        (area.y + if x11 { area.height } else { 0.0 }) as f64,
+    )
+}
+
+fn wake_ime_requests(window: &Window, title: &str) {
+    if window.window_handle().is_ok_and(|handle| {
+        matches!(
+            handle.as_raw(),
+            RawWindowHandle::Xlib(_) | RawWindowHandle::Xcb(_)
+        )
+    }) {
+        window.set_title(title);
+    }
+    window.request_redraw();
 }
 
 impl ApplicationHandler<UserEvent> for Application {
@@ -214,6 +295,14 @@ impl ApplicationHandler<UserEvent> for Application {
     }
 
     fn suspended(&mut self, _: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            window.set_ime_allowed(false);
+        }
+        self.scene.cancel_ime();
+        self.scene.ime_owner = None;
+        self.scene.ime_ready = false;
+        self.ime_disabling = false;
+        self.ime_geometry = None;
         self.renderer = None;
         self.window = None;
         self.cursor = None;
@@ -259,6 +348,7 @@ impl ApplicationHandler<UserEvent> for Application {
         {
             window.request_redraw();
         }
+        self.sync_ime();
         let control_flow = self.redraw_schedule.with_blink(self.scene.blink_deadline());
         event_loop.set_control_flow(control_flow);
         if self.trace {
@@ -290,6 +380,9 @@ impl ApplicationHandler<UserEvent> for Application {
                     | WindowEvent::ModifiersChanged(_)
                     | WindowEvent::Occluded(_)
                     | WindowEvent::Resized(_)
+                    | WindowEvent::Moved(_)
+                    | WindowEvent::ScaleFactorChanged { .. }
+                    | WindowEvent::Ime(_)
             )
         {
             eprintln!("input {event:?}");
@@ -361,8 +454,17 @@ impl ApplicationHandler<UserEvent> for Application {
                 self.scene
                     .keyboard(KeyInput::from_winit(event, is_synthetic));
             }
-            WindowEvent::Ime(Ime::Preedit(text, _)) => self.scene.composing(!text.is_empty()),
-            WindowEvent::Ime(Ime::Commit(_) | Ime::Disabled) => self.scene.composing(false),
+            WindowEvent::Ime(event) => {
+                let disabled = event == Ime::Disabled;
+                if disabled {
+                    self.ime_disabling = false;
+                }
+                self.scene.ime(event);
+                if disabled {
+                    self.scene.ime_owner = None;
+                    self.ime_geometry = None;
+                }
+            }
             WindowEvent::Touch(winit::event::Touch {
                 phase: winit::event::TouchPhase::Cancelled,
                 ..
@@ -405,6 +507,34 @@ impl ApplicationHandler<UserEvent> for Application {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidate_coordinates_are_window_local_logical_and_x11_uses_caret_bottom() {
+        let area = crate::ui::Bounds {
+            x: 52.0,
+            y: 83.0,
+            width: 1.5,
+            height: 27.0,
+        };
+        assert_eq!(
+            candidate_position(area, false),
+            LogicalPosition::new(52.0, 83.0)
+        );
+        assert_eq!(
+            candidate_position(area, true),
+            LogicalPosition::new(52.0, 110.0)
+        );
+        for scale in [1.0, 1.5] {
+            let physical = candidate_position(area, true).to_physical::<i32>(scale);
+            assert_eq!(
+                physical,
+                PhysicalPosition::new(
+                    (52.0 * scale).round() as i32,
+                    (110.0 * scale).round() as i32
+                )
+            );
+        }
+    }
 
     #[test]
     fn blink_and_surface_retry_choose_earliest_deadline_without_idle_polling() {

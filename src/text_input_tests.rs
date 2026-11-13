@@ -11,6 +11,378 @@ fn setup(value: &Signal<String>) -> (Scene, NodeId) {
     (scene, id)
 }
 
+fn enable_ime(scene: &mut Scene) {
+    scene.ime_owner = scene.ime_target();
+    scene.ime(Ime::Enabled);
+    assert!(scene.ime_ready);
+}
+
+#[test]
+fn ime_cursor_inside_combining_cluster_uses_nearest_shaped_stop() {
+    let value = Signal::new(String::new());
+    let (mut scene, id) = setup(&value);
+    enable_ime(&mut scene);
+    preedit(&mut scene, "Ae\u{301}", Some((2, 2)));
+    let node = &scene.nodes[id];
+    let geometry = Geometry::new(node.buffer.as_ref().unwrap(), node.text.as_deref().unwrap());
+    assert_eq!(editor(&scene, id).display_caret(), Some(2));
+    assert_eq!(
+        geometry.caret(2, Affinity::Before),
+        geometry.caret(1, Affinity::Before)
+    );
+    assert!(scene.ime_cursor_area().is_some());
+}
+
+#[test]
+fn ime_direct_commit_then_latin_key_preserve_distinct_edit_transactions() {
+    let value = Signal::new("abc".into());
+    let (mut scene, _) = setup(&value);
+    enable_ime(&mut scene);
+    scene.ime(Ime::Commit("é".into()));
+    type_text(&mut scene, "z");
+    assert_eq!(value.get(), "abcéz");
+    shortcut(&mut scene, "z", false);
+    assert_eq!(value.get(), "abcé");
+    shortcut(&mut scene, "z", false);
+    assert_eq!(value.get(), "abc");
+}
+
+#[test]
+fn ime_clipboard_cancel_keeps_logical_selection_and_new_ticket_replaces_once() {
+    let value = Signal::new("abc".into());
+    let (mut scene, id) = setup(&value);
+    scene.nodes[id]
+        .editor
+        .as_mut()
+        .unwrap()
+        .model
+        .set_selection(0, 2)
+        .unwrap();
+    enable_ime(&mut scene);
+    preedit(&mut scene, "你", Some((3, 3)));
+    let old = ticket(&scene, id, ClipboardAction::Paste);
+    scene.cancel_ime();
+    let new = ticket(&scene, id, ClipboardAction::Paste);
+    reply(&mut scene, old, "stale");
+    scene.ime(Ime::Commit("late".into()));
+    reply(&mut scene, new, "新");
+    assert_eq!(value.get(), "新c");
+    shortcut(&mut scene, "z", false);
+    assert_eq!(value.get(), "abc");
+}
+
+#[test]
+fn ime_candidate_follows_both_nested_scroll_offsets_and_effective_clip() {
+    let value = Signal::new(String::new());
+    let (inner, inner_handle) = Element::scroll_view(
+        120.0,
+        Element::column()
+            .child(Element::text("spacer").height(20.0))
+            .child(Element::text_input(&value))
+            .child(Element::text("tail").height(300.0)),
+    );
+    let (outer, outer_handle) = Element::scroll_view(
+        90.0,
+        Element::column()
+            .child(inner)
+            .child(Element::text("tail").height(300.0)),
+    );
+    let mut scene = Scene::new(outer);
+    scene.flush(240.0, 100.0);
+    named(&mut scene, NamedKey::Tab);
+    enable_ime(&mut scene);
+    preedit(&mut scene, "你好", Some((6, 6)));
+    let before = scene.ime_cursor_area().unwrap();
+    inner_handle.scroll_by(7.0);
+    outer_handle.scroll_by(5.0);
+    scene.flush(240.0, 100.0);
+    let after = scene.ime_cursor_area().unwrap();
+    assert!((before.y - after.y - 12.0).abs() < 0.01);
+    let id = scene.interaction.focused.unwrap();
+    let (_, clip) = scene.text_geometry(id);
+    assert!(after.y >= clip.y && after.y + after.height <= clip.y + clip.height);
+}
+
+#[test]
+fn ime_candidate_area_intersects_partial_vertical_content_clip() {
+    let value = Signal::new(String::new());
+    let (mut scene, id) = setup(&value);
+    enable_ime(&mut scene);
+    preedit(&mut scene, "你", Some((3, 3)));
+    let full = scene.ime_cursor_area().unwrap();
+    scene.nodes[id].clip = Bounds {
+        x: 0.0,
+        y: full.y + 5.0,
+        width: 240.0,
+        height: 8.0,
+    };
+    let partial = scene.ime_cursor_area().unwrap();
+    assert_eq!(partial.y, full.y + 5.0);
+    assert_eq!(partial.height, 8.0);
+    scene.nodes[id].clip.height = 0.0;
+    assert!(scene.ime_cursor_area().is_none());
+}
+
+fn preedit(scene: &mut Scene, text: &str, cursor: Option<(usize, usize)>) {
+    scene.ime(Ime::Preedit(text.into(), cursor));
+    scene.flush(240.0, 100.0);
+}
+
+#[test]
+fn ime_preedit_is_visual_only_commit_replaces_captured_selection_with_one_undo() {
+    let value = Signal::new("A👩🏽‍💻B".into());
+    let (mut scene, id) = setup(&value);
+    let count = Rc::new(Cell::new(0));
+    let observed = count.clone();
+    let _subscription = value.subscribe(move |_| observed.set(observed.get() + 1));
+    scene.nodes[id]
+        .editor
+        .as_mut()
+        .unwrap()
+        .model
+        .set_selection(1, 16)
+        .unwrap();
+    let selection = editor(&scene, id).model.selection();
+    enable_ime(&mut scene);
+    preedit(&mut scene, "你好", Some((3, 6)));
+    assert_eq!(value.get(), "A👩🏽‍💻B");
+    assert_eq!(count.get(), 0);
+    assert_eq!(scene.nodes[id].text.as_deref(), Some("A你好B"));
+    assert_eq!(editor(&scene, id).display_selection(), 4..7);
+    assert_eq!(editor(&scene, id).display_caret(), Some(7));
+    assert!(!editor(&scene, id).model.can_undo());
+    preedit(&mut scene, "", None);
+    assert_eq!(editor(&scene, id).model.selection(), selection);
+    scene.ime(Ime::Commit("你好".into()));
+    scene.flush(240.0, 100.0);
+    assert_eq!(value.get(), "A你好B");
+    assert_eq!(count.get(), 1);
+    shortcut(&mut scene, "z", false);
+    assert_eq!(value.get(), "A👩🏽‍💻B");
+    assert_eq!(editor(&scene, id).model.selection(), selection);
+    assert!(!editor(&scene, id).model.can_undo());
+}
+
+#[test]
+fn ime_empty_clear_cancel_preserves_model_history_and_directed_selection() {
+    let value = Signal::new("abc".into());
+    let (mut scene, id) = setup(&value);
+    scene.nodes[id]
+        .editor
+        .as_mut()
+        .unwrap()
+        .model
+        .set_selection(2, 0)
+        .unwrap();
+    let selection = editor(&scene, id).model.selection();
+    enable_ime(&mut scene);
+    preedit(&mut scene, "ni", Some((2, 2)));
+    preedit(&mut scene, "", None);
+    assert!(composition_is_empty(editor(&scene, id)));
+    assert_eq!(scene.nodes[id].text.as_deref(), Some("abc"));
+    assert_eq!(editor(&scene, id).model.selection(), selection);
+    scene.cancel_ime();
+    scene.ime(Ime::Commit("晚到".into()));
+    assert_eq!(value.get(), "abc");
+    assert!(!editor(&scene, id).model.can_undo());
+}
+
+#[test]
+fn ime_cursor_uses_utf8_bytes_not_scalar_count_and_none_hides_caret() {
+    let value = Signal::new(String::new());
+    let (mut scene, id) = setup(&value);
+    enable_ime(&mut scene);
+    preedit(&mut scene, "你é", Some((3, 5)));
+    assert_eq!(editor(&scene, id).display_selection(), 3..5);
+    assert_eq!(editor(&scene, id).display_caret(), Some(5));
+    preedit(&mut scene, "你é", None);
+    assert_eq!(editor(&scene, id).display_caret(), None);
+    let mut paints = Vec::new();
+    scene.paint_text_caret(id, &mut paints);
+    assert!(paints.is_empty());
+}
+
+#[test]
+fn ime_invalid_byte_cursor_and_multiline_preedit_retire_session() {
+    for (text, cursor) in [("你", Some((1, 1))), ("abc", Some((9, 9))), ("a\nb", None)] {
+        let value = Signal::new("safe".into());
+        let (mut scene, _) = setup(&value);
+        enable_ime(&mut scene);
+        preedit(&mut scene, text, cursor);
+        scene.ime(Ime::Commit("late".into()));
+        assert_eq!(value.get(), "safe");
+        assert_ne!(scene.ime_owner, scene.ime_target());
+    }
+}
+
+#[test]
+fn ime_focus_transfer_does_not_write_second_field_or_accept_before_enabled() {
+    let first = Signal::new(String::new());
+    let second = Signal::new(String::new());
+    let mut scene = Scene::new(
+        Element::column()
+            .child(Element::text_input(&first))
+            .child(Element::text_input(&second)),
+    );
+    scene.flush(240.0, 100.0);
+    named(&mut scene, NamedKey::Tab);
+    enable_ime(&mut scene);
+    preedit(&mut scene, "ni", Some((2, 2)));
+    let next = scene.nodes[scene.root.unwrap()].children[1];
+    let bounds = scene.nodes[next].bounds;
+    scene.mouse_input(
+        true,
+        winit::event::MouseButton::Left,
+        Some((bounds.x + 5.0, bounds.y + 5.0)),
+    );
+    scene.mouse_input(
+        false,
+        winit::event::MouseButton::Left,
+        Some((bounds.x + 5.0, bounds.y + 5.0)),
+    );
+    scene.ime(Ime::Commit("late".into()));
+    assert_eq!(first.get(), "");
+    assert_eq!(second.get(), "");
+    scene.ime(Ime::Disabled);
+    scene.ime_ready = false;
+    scene.ime_owner = scene.ime_target();
+    scene.ime(Ime::Commit("before enabled".into()));
+    assert_eq!(second.get(), "");
+    scene.ime(Ime::Enabled);
+    scene.ime(Ime::Commit("好".into()));
+    assert_eq!(second.get(), "好");
+}
+
+#[test]
+fn ime_mode_hide_external_and_focus_loss_invalidate_late_commits() {
+    for mode in 0..5 {
+        let value = Signal::new("base".into());
+        let readonly = Signal::new(false);
+        let disabled = Signal::new(false);
+        let visible = Signal::new(true);
+        let mut scene = Scene::new(
+            Element::text_input(&value)
+                .readonly_when(&readonly)
+                .disabled_when(&disabled)
+                .visible(&visible),
+        );
+        scene.flush(240.0, 100.0);
+        named(&mut scene, NamedKey::Tab);
+        enable_ime(&mut scene);
+        preedit(&mut scene, "ni", Some((2, 2)));
+        match mode {
+            0 => readonly.update(|value| *value = true),
+            1 => disabled.update(|value| *value = true),
+            2 => visible.update(|value| *value = false),
+            3 => value.update(|value| *value = "external".into()),
+            _ => scene.focus_lost(),
+        }
+        scene.flush(240.0, 100.0);
+        scene.ime(Ime::Commit("late".into()));
+        assert_eq!(value.get(), if mode == 3 { "external" } else { "base" });
+        let id = scene.root.unwrap();
+        assert!(editor(&scene, id).composition.is_none());
+        assert_eq!(scene.nodes[id].text.as_deref(), Some(value.get().as_str()));
+    }
+}
+
+#[test]
+fn ime_unmount_reused_slot_rejects_old_owner() {
+    let value = Signal::new(String::new());
+    let (root, children) = Element::keyed_column();
+    let mut scene = Scene::new(root);
+    children.insert("field", Element::text_input(&value));
+    scene.flush(240.0, 100.0);
+    named(&mut scene, NamedKey::Tab);
+    let old = scene.interaction.focused.unwrap();
+    enable_ime(&mut scene);
+    preedit(&mut scene, "ni", Some((2, 2)));
+    children.remove(old);
+    scene.flush(240.0, 100.0);
+    children.insert("field", Element::text_input(&value));
+    scene.flush(240.0, 100.0);
+    named(&mut scene, NamedKey::Tab);
+    assert_ne!(scene.interaction.focused, Some(old));
+    scene.ime(Ime::Commit("late".into()));
+    assert_eq!(value.get(), "");
+}
+
+#[test]
+fn ime_preedit_invalidates_old_clipboard_reply_and_pointer_cancels() {
+    let value = Signal::new("abc".into());
+    let (mut scene, id) = setup(&value);
+    let pending = ticket(&scene, id, ClipboardAction::Paste);
+    enable_ime(&mut scene);
+    preedit(&mut scene, "ni", Some((2, 2)));
+    reply(&mut scene, pending, "stale");
+    assert_eq!(value.get(), "abc");
+    scene.text_pointer_down(id, Some((5.0, 5.0)));
+    scene.ime(Ime::Commit("late".into()));
+    assert_eq!(value.get(), "abc");
+    assert!(editor(&scene, id).composition.is_none());
+}
+
+#[test]
+fn ime_composition_suppresses_routed_shortcuts_and_button_activation() {
+    let value = Signal::new(String::new());
+    let hits = Rc::new(Cell::new(0));
+    let observed = hits.clone();
+    let mut scene = Scene::new(
+        Element::column()
+            .on_event(EventPhase::Bubble, move |event, _| {
+                if matches!(&event.kind, EventKind::Key(_)) {
+                    observed.set(observed.get() + 1);
+                }
+            })
+            .child(Element::text_input(&value)),
+    );
+    scene.flush(240.0, 100.0);
+    named(&mut scene, NamedKey::Tab);
+    enable_ime(&mut scene);
+    preedit(&mut scene, "ni", Some((2, 2)));
+    hits.set(0);
+    for key in [
+        NamedKey::Space,
+        NamedKey::Enter,
+        NamedKey::Escape,
+        NamedKey::Backspace,
+        NamedKey::ArrowLeft,
+    ] {
+        named(&mut scene, key);
+    }
+    shortcut(&mut scene, "z", false);
+    assert_eq!(hits.get(), 0);
+    assert_eq!(value.get(), "");
+    assert!(editor(&scene, scene.interaction.focused.unwrap()).has_pending_ime());
+}
+
+#[test]
+fn ime_visual_measurement_hscroll_underline_and_candidate_follow_actual_caret() {
+    let value = Signal::new("prefix".into());
+    let (mut scene, id) = setup(&value);
+    enable_ime(&mut scene);
+    preedit(&mut scene, &"你好".repeat(24), Some((144, 144)));
+    let editor = editor(&scene, id);
+    assert!(editor.offset > 0.0);
+    assert_eq!(value.get(), "prefix");
+    let area = scene.ime_cursor_area().unwrap();
+    let (origin, clip) = scene.text_geometry(id);
+    let node = &scene.nodes[id];
+    let geometry = Geometry::new(node.buffer.as_ref().unwrap(), node.text.as_deref().unwrap());
+    let expected = origin.0 + geometry.caret(editor.display_caret().unwrap(), editor.affinity);
+    assert!((area.x - expected).abs() < 0.01);
+    assert!(area.x >= clip.x && area.x <= clip.x + clip.width);
+    let mut paints = Vec::new();
+    scene.paint_text_selection(id, &mut paints);
+    assert!(
+        paints
+            .iter()
+            .any(|paint| matches!(paint, Paint::Rect { bounds, .. } if bounds.height == 1.0))
+    );
+    scene.paint_text_caret(id, &mut paints);
+    assert!(paints.iter().any(|paint| matches!(paint, Paint::Rect { bounds, .. } if bounds.width == 1.5 && (bounds.x - area.x).abs() < 0.01)));
+}
+
 fn input(logical_key: Key, text: Option<&str>) -> KeyInput {
     KeyInput {
         logical_key,
