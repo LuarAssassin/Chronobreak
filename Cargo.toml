@@ -9,5 +9,6 @@ bytemuck = { version = "1.23", features = ["derive"] }
 glyphon = "0.9"
 pollster = "0.4"
 taffy = "0.7"
+unicode-segmentation = "1.13.3"
 wgpu = "25"
 winit = "0.30"
