@@ -22,6 +22,7 @@ cargo run --example batched_updates --locked
 cargo run --example background_messages --locked
 cargo run --example input_routing --locked
 cargo run --example scroll_views --locked
+cargo run --example visual_primitives --locked
 cargo run --example text_input --locked
 cargo run --example native_ime --locked
 ```
@@ -147,6 +148,23 @@ cargo build --examples --locked
 原型图形复验见 [最小 GUI 验证](docs/minimal-gui.md)，既有框架验证见 [可复用核心验证](docs/reusable-core.md)。可用 `CHRONOBREAK_TRACE=1 cargo run --example node_lifecycle --locked` 输出适配器、尺寸、缩放、活节点/taffy/槽位、订阅/pending/队列、CPU 文本 buffer、实际 prepare/跳过数及 TextRenderer 缓存/峰值；空闲时不持续输出帧。缓存计数不是驱动 VRAM 回收证明。
 
 本机已在 Xvfb + Mesa 软件 Vulkan 下实际验证中文绘制、点击、窗口重排、裁剪、空闲休眠及 1.5 倍 DPI 点击；隔离图形验证的可选工具为 `xvfb xdotool python3-pil`。原生 Wayland、多屏动态 DPI 和其他平台仍需另验。
+
+### 有限视觉与树图
+
+`Element::corner_radius`、内描边 `Border`、有限 `Shadow` 不改布局/命中；阴影服从祖先/窗口/滚动裁剪，圆角不隐含圆角子树裁剪。颜色数组统一为 sRGB / straight alpha，主题 hex 可用 `srgb8`，旧矩形颜色语义修正与迁移见 [视觉合同](docs/visual-primitives.md)。应用计算树的位置，先插线再插节点：
+
+```rust,no_run
+use chronobreak::{Border, Element, Shadow, srgb8, srgba8};
+let tree = Element::canvas(500.0, 160.0)
+    .child(Element::segment([150.0, 70.0], [280.0, 70.0], 2.0, srgb8(76, 98, 109)))
+    .child(Element::canvas(150.0, 52.0).positioned(20.0, 44.0)
+        .background(srgb8(185, 227, 240)).corner_radius(12.0)
+        .border(Border::new(2.0, srgb8(76, 98, 109)))
+        .shadow(Shadow::new(srgba8(0, 0, 0, 90), 8.0).offset(0.0, 4.0))
+        .child(Element::text("Knowledge").positioned(12.0, 12.0)));
+```
+
+真实树图见 `examples/visual_primitives.rs`；固定参考场景、有限资源循环与原生复验脚本均为 tracked source，不依赖私有 helper。无主题引擎、控件目录或自由画布。
 
 ## 入口
 

@@ -24,6 +24,7 @@ pub use input::{EventContext, EventKind, EventPhase, KeyInput, UiEvent, WheelInp
 use input::{Handler, Interaction};
 pub use scroll::{ScrollError, ScrollHandle, ScrollReceipt, ScrollSnapshot};
 
+/// 归一化 sRGB RGB + 线性 straight alpha；有限输入钳位到 [0, 1]。
 pub type Color = [f32; 4];
 #[derive(Default)]
 struct Update {
@@ -70,6 +71,8 @@ pub struct Element {
     font_size: f32,
     color: Color,
     background: Option<Color>,
+    decoration: crate::visual::Decoration,
+    segment: Option<crate::visual::Segment>,
     children: Vec<Element>,
     binding: Option<Binding>,
     visibility: Option<VisibilityBinding>,
@@ -102,6 +105,8 @@ impl Element {
             font_size: 18.0,
             color: [0.86, 0.90, 0.96, 1.0],
             background: None,
+            decoration: Default::default(),
+            segment: None,
             children: Vec::new(),
             binding: None,
             visibility: None,
@@ -126,7 +131,7 @@ impl Element {
         }
     }
 
-    /// A controlled, single-line field. Native IME is not implemented yet.
+    /// 受控单行输入；原生组合输入的平台/引擎资格见 docs/native-ime.md。
     ///
     /// ```
     /// use chronobreak::{Element, Signal};
@@ -280,8 +285,71 @@ impl Element {
     }
 
     pub fn background(mut self, color: Color) -> Self {
-        self.background = Some(color);
+        self.background = Some(crate::visual::color(color));
         self
+    }
+
+    /// 文字颜色使用 sRGB / straight alpha，与 background 相同。
+    pub fn color(mut self, color: Color) -> Self {
+        self.color = crate::visual::color(color);
+        self
+    }
+
+    /// 圆角钳位到 [0, 4096]，绘制时限制到短边一半；不裁成圆角子树。
+    pub fn corner_radius(mut self, radius: f32) -> Self {
+        self.decoration.radius = crate::visual::length(radius);
+        self
+    }
+
+    pub fn border(mut self, border: crate::Border) -> Self {
+        self.decoration.border = Some(border);
+        self
+    }
+
+    pub fn shadow(mut self, shadow: crate::Shadow) -> Self {
+        self.decoration.shadow = Some(shadow);
+        self
+    }
+
+    /// 固定尺寸容器，子节点由应用计算位置；保持子节点插入顺序。
+    pub fn canvas(width: f32, height: f32) -> Self {
+        assert!(width.is_finite() && width >= 0.0);
+        Self::column().width(width).height(height)
+    }
+
+    pub fn width(mut self, width: f32) -> Self {
+        assert!(width.is_finite() && width >= 0.0);
+        self.style.size.width = length(width);
+        self
+    }
+
+    /// 相对直接父节点的绝对位置，不参与父节点流式尺寸计算。
+    pub fn positioned(mut self, x: f32, y: f32) -> Self {
+        assert!(x.is_finite() && y.is_finite());
+        self.style.position = Position::Absolute;
+        self.style.inset.left = length(x);
+        self.style.inset.top = length(y);
+        self
+    }
+
+    /// 圆头线段，端点在父容器坐标中；零长线段为圆点，宽度为零时不画。
+    pub fn segment(from: [f32; 2], to: [f32; 2], width: f32, color: Color) -> Self {
+        assert!(from.into_iter().chain(to).all(f32::is_finite));
+        let width = crate::visual::length(width);
+        let left = from[0].min(to[0]) - width * 0.5;
+        let top = from[1].min(to[1]) - width * 0.5;
+        let mut element = Self::canvas(
+            (to[0] - from[0]).abs() + width,
+            (to[1] - from[1]).abs() + width,
+        )
+        .positioned(left, top);
+        element.segment = Some(crate::visual::Segment {
+            from: [from[0] - left, from[1] - top],
+            to: [to[0] - left, to[1] - top],
+            width,
+            color: crate::visual::color(color),
+        });
+        element
     }
 
     pub fn height(mut self, height: f32) -> Self {
@@ -318,7 +386,11 @@ pub(crate) struct Node {
     pub color: Color,
     pub bounds: Bounds,
     pub clip: Bounds,
+    ancestor_clip: Bounds,
     background: Option<Color>,
+    decoration: crate::visual::Decoration,
+    segment: Option<crate::visual::Segment>,
+    text_version: u64,
     click: Option<Rc<dyn Fn()>>,
     _subscriptions: Vec<Subscription>,
     formatter: Option<TextFormatter>,
@@ -340,6 +412,34 @@ pub(crate) enum Paint {
         color: Color,
     },
     Text(NodeId),
+    Shape {
+        bounds: Bounds,
+        clip: Bounds,
+        color: Color,
+        radius: f32,
+        border: Option<crate::Border>,
+        blur: f32,
+    },
+    Segment {
+        origin: [f32; 2],
+        clip: Bounds,
+        segment: crate::visual::Segment,
+    },
+}
+
+pub(crate) struct TextResource<'a> {
+    pub buffer: &'a Buffer,
+    pub version: u64,
+    pub origin: (f32, f32),
+    pub clip: Bounds,
+    pub color: Color,
+}
+
+pub(crate) struct Frame<'a> {
+    pub fonts: &'a mut FontSystem,
+    pub commands: Vec<Paint>,
+    pub texts: BTreeMap<NodeId, TextResource<'a>>,
+    pub text_buffers: usize,
 }
 
 pub(crate) struct Scene {
@@ -359,6 +459,7 @@ pub(crate) struct Scene {
     pub geometry_version: u64,
     pub layouts: u64,
     pub formats: u64,
+    shape_calls: u64,
     present_needed: bool,
     scroll_commands: Rc<RefCell<VecDeque<scroll::Command>>>,
     focus_reveal: Option<NodeId>,
@@ -415,6 +516,7 @@ impl Scene {
             geometry_version: 0,
             layouts: 0,
             formats: 0,
+            shape_calls: 0,
             present_needed: true,
             scroll_commands: Rc::default(),
             focus_reveal: None,
@@ -450,7 +552,11 @@ impl Scene {
             color: element.color,
             bounds: Bounds::default(),
             clip: Bounds::default(),
+            ancestor_clip: Bounds::default(),
             background: element.background,
+            decoration: element.decoration,
+            segment: element.segment,
+            text_version: 1,
             click: element.click,
             disabled: element.disabled,
             focusable: element.focusable.unwrap_or(false),
@@ -630,6 +736,7 @@ impl Scene {
                         Shaping::Advanced,
                     );
                     node.text = Some(text);
+                    node.text_version += 1;
                     self.dirty.text_measurement |= parent_visible && node.visible;
                     changed = true;
                 }
@@ -841,6 +948,7 @@ impl Scene {
             return;
         }
         let dirty = std::mem::take(&mut self.dirty);
+        let layout_started = std::time::Instant::now();
         let root_id = self.nodes[self.root.unwrap()].layout_id;
         if self.tree.style(root_id).unwrap().size.width != length(width) {
             let mut style = self.tree.style(root_id).unwrap().clone();
@@ -849,6 +957,7 @@ impl Scene {
         }
         let nodes = &mut self.nodes;
         let fonts = &mut self.fonts;
+        let shape_calls = &mut self.shape_calls;
         self.tree
             .compute_layout_with_measure(
                 root_id,
@@ -875,6 +984,7 @@ impl Scene {
                         AvailableSpace::MaxContent => None,
                     });
                     buffer.set_size(fonts, width, None);
+                    *shape_calls += 1;
                     buffer.shape_until_scroll(fonts, false);
                     let measured_width = buffer
                         .layout_runs()
@@ -907,8 +1017,12 @@ impl Scene {
         self.layouts += 1;
         if std::env::var_os("CHRONOBREAK_TRACE").is_some() {
             eprintln!(
-                "layout version={} layouts={} formats={} dirty={dirty:?}",
-                self.geometry_version, self.layouts, self.formats
+                "layout version={} layouts={} formats={} shape_calls_total={} layout_us={} dirty={dirty:?}",
+                self.geometry_version,
+                self.layouts,
+                self.formats,
+                self.shape_calls,
+                layout_started.elapsed().as_micros()
             );
         }
     }
@@ -923,8 +1037,11 @@ impl Scene {
         };
         let node = &mut self.nodes[index];
         node.bounds = bounds;
+        node.ancestor_clip = clip;
         node.clip = bounds.intersect(clip);
         if shape && let Some(buffer) = &mut node.buffer {
+            self.shape_calls += 1;
+            node.text_version += 1;
             buffer.set_size(
                 &mut self.fonts,
                 if node.editor.is_some() {
@@ -949,19 +1066,113 @@ impl Scene {
         paints
     }
 
+    pub fn text_ids(&self) -> BTreeSet<NodeId> {
+        self.nodes
+            .iter()
+            .filter_map(|node| {
+                node.buffer.as_ref()?;
+                self.tree.get_node_context(node.layout_id).copied()
+            })
+            .collect()
+    }
+
+    pub fn frame(&mut self) -> Frame<'_> {
+        if std::env::var_os("CHRONOBREAK_TRACE").is_some() {
+            eprintln!("scene {}", self.stats());
+        }
+        let commands = self.display_list();
+        let geometry: BTreeMap<_, _> = commands
+            .iter()
+            .filter_map(|command| {
+                let Paint::Text(id) = command else {
+                    return None;
+                };
+                Some((*id, self.text_geometry(*id)))
+            })
+            .collect();
+        let texts = commands
+            .iter()
+            .filter_map(|command| {
+                let Paint::Text(id) = command else {
+                    return None;
+                };
+                let node = self.nodes.get(*id)?;
+                let (origin, clip) = geometry[id];
+                Some((
+                    *id,
+                    TextResource {
+                        buffer: node.buffer.as_ref()?,
+                        version: node.text_version,
+                        origin,
+                        clip,
+                        color: node.color,
+                    },
+                ))
+            })
+            .collect();
+        let text_buffers = self
+            .nodes
+            .iter()
+            .filter(|node| node.buffer.is_some())
+            .count();
+        Frame {
+            fonts: &mut self.fonts,
+            commands,
+            texts,
+            text_buffers,
+        }
+    }
+
     fn paint(&self, index: NodeId, paints: &mut Vec<Paint>) {
         let node = &self.nodes[index];
-        if !node.visible || node.clip.width <= 0.0 || node.clip.height <= 0.0 {
+        if !node.visible || node.ancestor_clip.width <= 0.0 || node.ancestor_clip.height <= 0.0 {
             return;
         }
-        if let Some(color) = node.background {
-            paints.push(Paint::Rect {
-                bounds: node.bounds,
-                clip: node.clip,
-                color,
+        if let Some(shadow) = node.decoration.shadow {
+            paints.push(Paint::Shape {
+                bounds: shadow.shape(node.bounds),
+                clip: node.ancestor_clip,
+                color: shadow.color,
+                radius: (node
+                    .decoration
+                    .radius
+                    .min(node.bounds.width.min(node.bounds.height) * 0.5)
+                    + shadow.spread)
+                    .max(0.0),
+                border: None,
+                blur: shadow.blur,
             });
         }
-        if node.buffer.is_some() {
+        if node.clip.width <= 0.0 || node.clip.height <= 0.0 {
+            return;
+        }
+        if node.decoration.radius == 0.0 && node.decoration.border.is_none() {
+            if let Some(color) = node.background {
+                paints.push(Paint::Rect {
+                    bounds: node.bounds,
+                    clip: node.ancestor_clip,
+                    color,
+                });
+            }
+        } else {
+            paints.push(Paint::Shape {
+                bounds: node.bounds,
+                clip: node.ancestor_clip,
+                color: node.background.unwrap_or([0.0; 4]),
+                radius: node.decoration.radius,
+                border: node.decoration.border,
+                blur: 0.0,
+            });
+        }
+        if let Some(segment) = node.segment {
+            paints.push(Paint::Segment {
+                origin: [node.bounds.x, node.bounds.y],
+                clip: node.ancestor_clip,
+                segment,
+            });
+        }
+        let text_clip = self.text_geometry(index).1;
+        if node.buffer.is_some() && text_clip.width > 0.0 && text_clip.height > 0.0 {
             self.paint_text_selection(index, paints);
             paints.push(Paint::Text(index));
             self.paint_text_caret(index, paints);
@@ -1015,6 +1226,10 @@ mod background_tests;
 #[cfg(test)]
 #[path = "scroll_tests.rs"]
 mod scroll_tests;
+
+#[cfg(test)]
+#[path = "visual_tests.rs"]
+mod visual_tests;
 
 #[cfg(test)]
 mod tests {

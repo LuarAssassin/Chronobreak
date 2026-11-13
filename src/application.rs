@@ -150,7 +150,7 @@ impl Application {
             .renderer
             .as_mut()
             .unwrap()
-            .draw(&mut self.scene, scale)?;
+            .draw(self.scene.frame(), scale)?;
         self.redraw_schedule.complete(outcome, Instant::now());
         if outcome == DrawOutcome::Presented {
             self.scene.presented();
@@ -332,7 +332,7 @@ impl ApplicationHandler<UserEvent> for Application {
                 CursorIcon::Default
             });
             if let Some(renderer) = &mut self.renderer {
-                renderer.collect_unmounted(&self.scene);
+                renderer.collect_unmounted(&self.scene.text_ids());
             }
             if self.redraw_schedule.request_scene(
                 self.scene.needs_present(),
@@ -486,7 +486,7 @@ impl ApplicationHandler<UserEvent> for Application {
                 self.renderer
                     .as_mut()
                     .unwrap()
-                    .collect_unmounted(&self.scene);
+                    .collect_unmounted(&self.scene.text_ids());
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
                 self.scene
