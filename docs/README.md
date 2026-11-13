@@ -10,6 +10,7 @@
 - [M1b 批处理与提交](batched-updates.md)：重入通知、批边界、传播诊断及输入几何验收。
 - [M1c 后台消息](background-messages.md)：有界背压、UI 作用域、EventLoopProxy 唤醒与验收。
 - [M2a 输入路由](input-routing.md)：路由顺序、焦点/捕获、键盘默认动作、迁移与图形证据。
+- [M2b 纵向视口候选](scroll-views.md)：独立测量、偏移/裁剪、滚轮剩余链、焦点揭示与验证边界。
 - [协作与分支](../CONTRIBUTING.md)：分支、agent 隔离、验证与合并约定。
 
 ## 外部参考

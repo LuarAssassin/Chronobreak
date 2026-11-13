@@ -16,8 +16,11 @@ use taffy::{prelude::*, style::AvailableSpace};
 
 #[path = "input.rs"]
 mod input;
-pub use input::{EventContext, EventKind, EventPhase, KeyInput, UiEvent};
+#[path = "scroll.rs"]
+mod scroll;
+pub use input::{EventContext, EventKind, EventPhase, KeyInput, UiEvent, WheelInput};
 use input::{Handler, Interaction};
+pub use scroll::{ScrollError, ScrollHandle, ScrollReceipt, ScrollSnapshot};
 
 pub type Color = [f32; 4];
 #[derive(Default)]
@@ -74,6 +77,7 @@ pub struct Element {
     click: Option<Rc<dyn Fn()>>,
     container: Option<Children>,
     messages: Vec<Box<dyn Route>>,
+    scroll: Option<ScrollHandle>,
 }
 
 impl Element {
@@ -102,6 +106,7 @@ impl Element {
             click: None,
             container: None,
             messages: Vec::new(),
+            scroll: None,
         }
     }
 
@@ -161,6 +166,10 @@ impl Element {
     }
 
     pub fn child(mut self, child: Self) -> Self {
+        assert!(
+            self.scroll.is_none(),
+            "scroll_view owns exactly one content child"
+        );
         self.children.push(child);
         self
     }
@@ -232,6 +241,20 @@ impl Element {
         self
     }
 
+    pub fn height(mut self, height: f32) -> Self {
+        assert!(height.is_finite() && height >= 0.0);
+        self.style.size.height = length(height);
+        self
+    }
+
+    /// 固定逻辑高度的纵向视口；内容独立测量，不卸载被裁剪的节点。
+    pub fn scroll_view(height: f32, content: Self) -> (Self, ScrollHandle) {
+        let handle = ScrollHandle::default();
+        let mut viewport = Self::column().height(height).child(content);
+        viewport.scroll = Some(handle.clone());
+        (viewport, handle)
+    }
+
     pub fn font_size(mut self, size: f32) -> Self {
         self.font_size = size;
         self
@@ -262,6 +285,7 @@ pub(crate) struct Node {
     handlers: Vec<Handler>,
     pub revision: usize,
     container: Option<Children>,
+    scroll: Option<scroll::Viewport>,
 }
 
 #[derive(Clone, Copy)]
@@ -292,6 +316,9 @@ pub(crate) struct Scene {
     pub layouts: u64,
     pub formats: u64,
     present_needed: bool,
+    scroll_commands: Rc<RefCell<VecDeque<scroll::Command>>>,
+    focus_reveal: Option<NodeId>,
+    pub placements: u64,
 }
 
 #[derive(Debug, Default)]
@@ -342,6 +369,9 @@ impl Scene {
             layouts: 0,
             formats: 0,
             present_needed: true,
+            scroll_commands: Rc::default(),
+            focus_reveal: None,
+            placements: 0,
         };
         scene.root = Some(scene.mount(element));
         scene
@@ -380,7 +410,13 @@ impl Scene {
             visible: true,
             revision: 0,
             container: element.container,
+            scroll: element
+                .scroll
+                .map(|handle| scroll::Viewport::new(handle, &self.scroll_commands)),
         });
+        if let Some(scroll) = &self.nodes[index].scroll {
+            scroll.attach(index);
+        }
         for child in self.nodes[index].children.clone() {
             self.nodes[child].parent = Some(index);
         }
@@ -445,6 +481,7 @@ impl Scene {
     }
 
     pub(crate) fn close_messages(&mut self) {
+        self.close_scrolls();
         self.wake.close();
         self.routes.clear();
         let commands = std::mem::take(&mut *self.commands.borrow_mut());
@@ -560,6 +597,7 @@ impl Scene {
     pub fn flush(&mut self, width: f32, height: f32) -> usize {
         let changed = self.sync();
         self.layout(width, height);
+        self.commit_scrolls();
         self.reconcile_hover();
         changed
     }
@@ -664,6 +702,9 @@ impl Scene {
     fn unmount(&mut self, id: NodeId) {
         self.routes.retain(|(target, _)| *target != id);
         let node = self.nodes.remove(id).expect("validated subtree");
+        if let Some(scroll) = &node.scroll {
+            scroll.detach();
+        }
         if self.pressed == Some(id) {
             self.pressed = None;
         }
@@ -756,6 +797,7 @@ impl Scene {
                 },
             )
             .unwrap();
+        self.clamp_scrolls();
         self.place(
             self.root.unwrap(),
             0.0,
@@ -766,7 +808,9 @@ impl Scene {
                 width,
                 height,
             },
+            true,
         );
+        self.placements += 1;
         self.geometry_version = self.commit_version;
         self.layouts += 1;
         if std::env::var_os("CHRONOBREAK_TRACE").is_some() {
@@ -777,7 +821,7 @@ impl Scene {
         }
     }
 
-    fn place(&mut self, index: NodeId, parent_x: f32, parent_y: f32, clip: Bounds) {
+    fn place(&mut self, index: NodeId, parent_x: f32, parent_y: f32, clip: Bounds, shape: bool) {
         let layout = self.tree.layout(self.nodes[index].layout_id).unwrap();
         let bounds = Bounds {
             x: parent_x + layout.location.x,
@@ -788,13 +832,14 @@ impl Scene {
         let node = &mut self.nodes[index];
         node.bounds = bounds;
         node.clip = bounds.intersect(clip);
-        if let Some(buffer) = &mut node.buffer {
+        if shape && let Some(buffer) = &mut node.buffer {
             buffer.set_size(&mut self.fonts, Some(bounds.width), None);
             buffer.shape_until_scroll(&mut self.fonts, false);
         }
         let clip = node.clip;
+        let offset = node.scroll.as_ref().map_or(0.0, |scroll| scroll.offset);
         for child in self.nodes[index].children.clone() {
-            self.place(child, bounds.x, bounds.y, clip);
+            self.place(child, bounds.x, bounds.y - offset, clip, shape);
         }
     }
 
@@ -823,6 +868,7 @@ impl Scene {
             self.paint(*child, paints);
         }
         self.paint_interaction(index, paints);
+        self.paint_scroll_indicator(index, paints);
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> Option<NodeId> {
@@ -863,6 +909,10 @@ mod batch_tests;
 #[cfg(test)]
 #[path = "background_tests.rs"]
 mod background_tests;
+
+#[cfg(test)]
+#[path = "scroll_tests.rs"]
+mod scroll_tests;
 
 #[cfg(test)]
 mod tests {

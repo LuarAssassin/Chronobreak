@@ -1,7 +1,7 @@
 use super::*;
 use std::collections::HashSet;
 use winit::{
-    event::{ElementState, KeyEvent, MouseButton},
+    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase},
     keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey},
 };
 
@@ -35,7 +35,28 @@ impl KeyInput {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WheelInput {
+    pub raw: MouseScrollDelta,
+    pub phase: TouchPhase,
+    pub vertical: f32,
+}
+
+impl WheelInput {
+    pub fn from_winit(raw: MouseScrollDelta, phase: TouchPhase, scale: f64) -> Self {
+        let vertical = match raw {
+            MouseScrollDelta::LineDelta(_, vertical) => -vertical * 40.0,
+            MouseScrollDelta::PixelDelta(position) => -(position.y / scale) as f32,
+        };
+        Self {
+            raw,
+            phase,
+            vertical,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum EventKind {
     PointerDown(MouseButton),
     PointerMove,
@@ -45,6 +66,7 @@ pub enum EventKind {
     PointerCancel,
     CaptureLost,
     Key(KeyInput),
+    Wheel(WheelInput),
 }
 
 #[derive(Clone, Debug)]
@@ -110,6 +132,10 @@ pub(super) struct Interaction {
 }
 
 impl Scene {
+    pub(super) fn scroll_enabled(&self, id: NodeId) -> bool {
+        self.enabled(id)
+    }
+
     fn enabled(&self, id: NodeId) -> bool {
         self.nodes.get(id).is_some_and(|node| {
             node.visible && !node.disabled && node.parent.is_none_or(|parent| self.enabled(parent))
@@ -215,6 +241,7 @@ impl Scene {
     fn set_focus(&mut self, target: Option<NodeId>) {
         if self.interaction.focused != target {
             self.interaction.focused = target;
+            self.focus_reveal = target;
             self.interaction.space = None;
             self.present_needed = true;
         }
@@ -483,6 +510,22 @@ impl Scene {
                     }
                 }
                 _ => {}
+            }
+        });
+    }
+
+    pub(crate) fn wheel(&mut self, wheel: WheelInput) {
+        self.prepare_input();
+        let Some(target) = self
+            .interaction
+            .pointer
+            .and_then(|(x, y)| self.deepest_hit(x, y))
+        else {
+            return;
+        };
+        crate::batch(|| {
+            if !self.dispatch(target, EventKind::Wheel(wheel)) {
+                self.scroll_chain(target, wheel.vertical);
             }
         });
     }

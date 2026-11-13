@@ -29,8 +29,11 @@ pub use messages::{
 pub use node::NodeId;
 pub use render::Result;
 pub use signal::{Signal, batch};
-pub use ui::{Element, EventContext, EventKind, EventPhase, KeyInput, UiEvent};
+pub use ui::{
+    Element, EventContext, EventKind, EventPhase, KeyInput, ScrollError, ScrollHandle,
+    ScrollReceipt, ScrollSnapshot, UiEvent, WheelInput,
+};
 pub use winit::{
-    event::{ElementState, MouseButton},
+    event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase},
     keyboard,
 };

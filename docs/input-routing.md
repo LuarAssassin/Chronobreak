@@ -1,6 +1,6 @@
 # M2a 输入路由、焦点与捕获
 
-2026-11-13 的独立候选切片，分支 `feat/input-routing`，工作树 `.worktrees/input-routing`，基线 `main@13b5be5aadba3b1ab89ee02745541100859a32e0`。M1a/M1b/M1c 已分别合入 PR #6/#7/#8；本切片待独立审查及远端 CI，不表示 M2 已完成。M2b 的滚动、滚轮、offset 与 `scroll_into_view`，以及 M3 的编辑/IME 均未实现。
+2026-11-13 的独立切片，原分支 `feat/input-routing`，工作树 `.worktrees/input-routing`，基线 `main@13b5be5aadba3b1ab89ee02745541100859a32e0`；现已通过 PR #9 合入。M1a/M1b/M1c 已分别合入 PR #6/#7/#8，不表示整个 M2 已完成。本文保留 M2a 原始验收证据；后续 M2b 初始纵向滚轮/offset/`scroll_into_view` 候选及 `EventKind` 迁移见 [纵向视口](scroll-views.md)，待审查。M3 编辑/IME 未实现。
 
 ## 公共入口
 
