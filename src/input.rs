@@ -1,7 +1,7 @@
 use super::*;
 use std::collections::HashSet;
 use winit::{
-    event::{ElementState, KeyEvent, MouseButton},
+    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase},
     keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey},
 };
 
@@ -35,7 +35,28 @@ impl KeyInput {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WheelInput {
+    pub raw: MouseScrollDelta,
+    pub phase: TouchPhase,
+    pub vertical: f32,
+}
+
+impl WheelInput {
+    pub fn from_winit(raw: MouseScrollDelta, phase: TouchPhase, scale: f64) -> Self {
+        let vertical = match raw {
+            MouseScrollDelta::LineDelta(_, vertical) => -vertical * 40.0,
+            MouseScrollDelta::PixelDelta(position) => -(position.y / scale) as f32,
+        };
+        Self {
+            raw,
+            phase,
+            vertical,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum EventKind {
     PointerDown(MouseButton),
     PointerMove,
@@ -45,6 +66,7 @@ pub enum EventKind {
     PointerCancel,
     CaptureLost,
     Key(KeyInput),
+    Wheel(WheelInput),
 }
 
 #[derive(Clone, Debug)]
@@ -97,6 +119,12 @@ impl EventContext {
 pub(super) type Handler = (EventPhase, Rc<dyn Fn(&UiEvent, &mut EventContext)>);
 
 #[derive(Default)]
+struct DispatchOutcome {
+    default_prevented: bool,
+    focus_requested: bool,
+}
+
+#[derive(Default)]
 pub(super) struct Interaction {
     pointer: Option<(f32, f32)>,
     hovered: Vec<NodeId>,
@@ -110,6 +138,10 @@ pub(super) struct Interaction {
 }
 
 impl Scene {
+    pub(super) fn scroll_enabled(&self, id: NodeId) -> bool {
+        self.enabled(id)
+    }
+
     fn enabled(&self, id: NodeId) -> bool {
         self.nodes.get(id).is_some_and(|node| {
             node.visible && !node.disabled && node.parent.is_none_or(|parent| self.enabled(parent))
@@ -143,9 +175,9 @@ impl Scene {
             .find(|id| self.enabled(*id) && self.nodes[*id].click.is_some())
     }
 
-    fn dispatch(&mut self, target: NodeId, kind: EventKind) -> bool {
+    fn dispatch(&mut self, target: NodeId, kind: EventKind) -> DispatchOutcome {
         if !self.enabled(target) {
-            return false;
+            return DispatchOutcome::default();
         }
         let path = self.path(target);
         let event = UiEvent {
@@ -194,13 +226,16 @@ impl Scene {
         {
             self.set_capture(capture.filter(|id| self.enabled(*id)));
         }
-        if let Some(focus) = context
+        let focus = context
             .focus
-            .filter(|id| self.enabled(*id) && self.nodes[*id].focusable)
-        {
+            .filter(|id| self.enabled(*id) && self.nodes[*id].focusable);
+        if let Some(focus) = focus {
             self.set_focus(Some(focus));
         }
-        context.default_prevented
+        DispatchOutcome {
+            default_prevented: context.default_prevented,
+            focus_requested: focus.is_some(),
+        }
     }
 
     fn set_capture(&mut self, target: Option<NodeId>) {
@@ -215,6 +250,7 @@ impl Scene {
     fn set_focus(&mut self, target: Option<NodeId>) {
         if self.interaction.focused != target {
             self.interaction.focused = target;
+            self.focus_reveal = target;
             self.interaction.space = None;
             self.present_needed = true;
         }
@@ -333,7 +369,7 @@ impl Scene {
             }
             let hit = position.and_then(|(x, y)| self.deepest_hit(x, y));
             let target = self.interaction.captured.or(hit);
-            let prevented = target.is_some_and(|id| {
+            let outcome = target.map_or_else(DispatchOutcome::default, |id| {
                 self.dispatch(
                     id,
                     if down {
@@ -343,6 +379,7 @@ impl Scene {
                     },
                 )
             });
+            let prevented = outcome.default_prevented;
             if !down && self.interaction.buttons.is_empty() {
                 self.set_capture(None);
             }
@@ -352,7 +389,7 @@ impl Scene {
             let click = position.and_then(|(x, y)| self.hit_test(x, y));
             if down {
                 self.pressed = if prevented { None } else { click };
-                if !prevented {
+                if !prevented && !outcome.focus_requested {
                     let focus = hit.and_then(|id| {
                         self.path(id)
                             .into_iter()
@@ -360,6 +397,7 @@ impl Scene {
                             .find(|id| self.nodes[*id].focusable)
                     });
                     self.set_focus(focus);
+                    self.focus_reveal = None;
                 }
                 false
             } else {
@@ -436,8 +474,10 @@ impl Scene {
         }
         crate::batch(|| {
             let target = self.interaction.focused.or(self.root);
-            let prevented =
-                target.is_some_and(|id| self.dispatch(id, EventKind::Key(input.clone())));
+            let prevented = target.is_some_and(|id| {
+                self.dispatch(id, EventKind::Key(input.clone()))
+                    .default_prevented
+            });
             let space_owner = if !down && input.logical_key == Key::Named(NamedKey::Space) {
                 self.interaction.space.take()
             } else {
@@ -483,6 +523,25 @@ impl Scene {
                     }
                 }
                 _ => {}
+            }
+        });
+    }
+
+    pub(crate) fn wheel(&mut self, wheel: WheelInput) {
+        self.prepare_input();
+        let Some(target) = self
+            .interaction
+            .pointer
+            .and_then(|(x, y)| self.deepest_hit(x, y))
+        else {
+            return;
+        };
+        crate::batch(|| {
+            if !self
+                .dispatch(target, EventKind::Wheel(wheel))
+                .default_prevented
+            {
+                self.scroll_chain(target, wheel.vertical);
             }
         });
     }

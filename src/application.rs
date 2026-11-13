@@ -1,6 +1,6 @@
 use crate::{
     render::{DrawOutcome, Renderer, Result},
-    ui::{Element, KeyInput, Scene},
+    ui::{Element, KeyInput, Scene, WheelInput},
 };
 use std::{
     sync::Arc,
@@ -271,6 +271,7 @@ impl ApplicationHandler<UserEvent> for Application {
                 WindowEvent::CursorMoved { .. }
                     | WindowEvent::CursorLeft { .. }
                     | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
                     | WindowEvent::Focused(_)
                     | WindowEvent::KeyboardInput { .. }
                     | WindowEvent::ModifiersChanged(_)
@@ -369,6 +370,10 @@ impl ApplicationHandler<UserEvent> for Application {
                     .as_mut()
                     .unwrap()
                     .collect_unmounted(&self.scene);
+            }
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                self.scene
+                    .wheel(WheelInput::from_winit(delta, phase, window.scale_factor()));
             }
             WindowEvent::RedrawRequested => {
                 self.redraw_schedule.requested = false;
