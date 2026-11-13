@@ -1,5 +1,7 @@
 # M1a 节点生命周期验收
 
+> 历史切片记录：M1a 后已通过 PR #6 合入 main，M1b 通过 PR #7 合入。下述“未交付”等范围说明保留当时基线语境；当前 M1c 候选见 [后台消息](background-messages.md)。
+
 ## 状态与入口
 
 2026-11-13，Developer 在 `feat/node-lifecycle`、独立 worktree `.worktrees/node-lifecycle` 实现；基于 `main@b1919410990ca4b6145eb6620383b454546563af`。协调方已独立审查代码可合并并核实下述测试与压力日志；远端 `Rust checks` 状态仍由协调方确认。没有修改 main、合并或替用户选择许可证。M1b/M1c 未交付。

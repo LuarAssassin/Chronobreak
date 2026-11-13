@@ -16,6 +16,11 @@ use winit::{
 
 const RETRY_DELAY: Duration = Duration::from_millis(100);
 
+#[derive(Debug)]
+enum UserEvent {
+    Messages,
+}
+
 #[derive(Default)]
 struct RedrawSchedule {
     retry_at: Option<Instant>,
@@ -75,6 +80,7 @@ pub struct Application {
     error: Option<Box<dyn std::error::Error>>,
     trace: bool,
     redraw_schedule: RedrawSchedule,
+    messages_ready: bool,
 }
 
 impl Application {
@@ -89,6 +95,7 @@ impl Application {
             error: None,
             trace: std::env::var_os("CHRONOBREAK_TRACE").is_some(),
             redraw_schedule: RedrawSchedule::default(),
+            messages_ready: false,
         }
     }
 
@@ -98,7 +105,11 @@ impl Application {
     }
 
     pub fn run(mut self) -> Result<()> {
-        let event_loop = EventLoop::new()?;
+        let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
+        let proxy = event_loop.create_proxy();
+        self.scene.wake.install(Arc::new(move || {
+            proxy.send_event(UserEvent::Messages).is_ok()
+        }));
         event_loop.set_control_flow(ControlFlow::Wait);
         event_loop.run_app(&mut self)?;
         self.error.map_or(Ok(()), Err)
@@ -148,7 +159,18 @@ impl Application {
     }
 }
 
-impl ApplicationHandler for Application {
+impl ApplicationHandler<UserEvent> for Application {
+    fn user_event(&mut self, _: &ActiveEventLoop, _: UserEvent) {
+        self.messages_ready = true;
+        if self.trace {
+            eprintln!("user_event messages_ready");
+        }
+    }
+
+    fn exiting(&mut self, _: &ActiveEventLoop) {
+        self.scene.close_messages();
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -188,6 +210,12 @@ impl ApplicationHandler for Application {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if std::mem::take(&mut self.messages_ready) {
+            let count = self.scene.drain_messages();
+            if self.trace {
+                eprintln!("messages dispatched={count}");
+            }
+        }
         if let Some(window) = &self.window {
             let size = window.inner_size();
             let scale = window.scale_factor() as f32;
@@ -211,6 +239,9 @@ impl ApplicationHandler for Application {
             window.request_redraw();
         }
         event_loop.set_control_flow(self.redraw_schedule.control_flow());
+        if self.trace {
+            eprintln!("wait {:?}", self.redraw_schedule.control_flow());
+        }
     }
 
     fn window_event(

@@ -1,14 +1,16 @@
 use crate::signal::{Signal, Subscription};
 use crate::{
     children::{Action, Children, Commands, TreeError},
+    messages::{MessageReceiver, Route, Wake},
     node::{Arena, NodeId},
 };
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Wrap};
 use std::{
     any::Any,
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     rc::{Rc, Weak},
+    sync::Arc,
 };
 use taffy::{prelude::*, style::AvailableSpace};
 
@@ -61,6 +63,7 @@ pub struct Element {
     visibility: Option<VisibilityBinding>,
     click: Option<Rc<dyn Fn()>>,
     container: Option<Children>,
+    messages: Vec<Box<dyn Route>>,
 }
 
 impl Element {
@@ -84,6 +87,7 @@ impl Element {
             visibility: None,
             click: None,
             container: None,
+            messages: Vec::new(),
         }
     }
 
@@ -144,6 +148,17 @@ impl Element {
 
     pub fn child(mut self, child: Self) -> Self {
         self.children.push(child);
+        self
+    }
+
+    /// 在 UI 线程的框架批次内处理有界后台数据。
+    /// 已提交卸载关闭接收器；排队删除不是立即取消。
+    pub fn on_message<T: Send + 'static>(
+        mut self,
+        receiver: MessageReceiver<T>,
+        handler: impl FnMut(T) + 'static,
+    ) -> Self {
+        self.messages.push(receiver.bind(handler));
         self
     }
 
@@ -210,6 +225,8 @@ pub(crate) enum Paint {
 }
 
 pub(crate) struct Scene {
+    pub(crate) wake: Arc<Wake>,
+    routes: VecDeque<(NodeId, Box<dyn Route>)>,
     pub fonts: FontSystem,
     pub nodes: Arena<Node>,
     tree: TaffyTree<NodeId>,
@@ -242,14 +259,11 @@ impl Dirty {
 
 impl Drop for Scene {
     fn drop(&mut self) {
+        self.close_messages();
         for node in self.nodes.iter() {
             if let Some(container) = &node.container {
                 container.0.borrow_mut().keys.clear();
             }
-        }
-        let commands = std::mem::take(&mut *self.commands.borrow_mut());
-        for command in commands {
-            command.receipt.finish(Err(TreeError::SceneDropped));
         }
     }
 }
@@ -257,6 +271,8 @@ impl Drop for Scene {
 impl Scene {
     pub fn new(element: Element) -> Self {
         let mut scene = Self {
+            wake: Arc::default(),
+            routes: VecDeque::new(),
             fonts: FontSystem::new(),
             nodes: Arena::new(),
             tree: TaffyTree::new(),
@@ -359,7 +375,46 @@ impl Scene {
         node._subscriptions = subscriptions;
         node.formatter = formatter;
         node.visible = visible;
+        for route in element.messages {
+            route.attach(&self.wake);
+            self.routes.push_back((index, route));
+        }
         index
+    }
+
+    pub(crate) fn close_messages(&mut self) {
+        self.wake.close();
+        self.routes.clear();
+        let commands = std::mem::take(&mut *self.commands.borrow_mut());
+        for command in commands {
+            command.receipt.finish(Err(TreeError::SceneDropped));
+        }
+    }
+
+    pub(crate) fn drain_messages(&mut self) -> usize {
+        self.wake.acknowledge();
+        self.sync();
+        let mut count = 0;
+        let mut empty = 0;
+        crate::batch(|| {
+            while count < 64 && empty < self.routes.len() {
+                let Some((id, route)) = self.routes.pop_front() else {
+                    break;
+                };
+                if self.nodes.get(id).is_some() && route.dispatch_one() {
+                    count += 1;
+                    empty = 0;
+                } else {
+                    empty += 1;
+                }
+                self.routes.push_back((id, route));
+            }
+        });
+        self.sync();
+        if self.routes.iter().any(|(_, route)| route.pending()) {
+            self.wake.notify();
+        }
+        count
     }
 
     pub fn sync(&mut self) -> usize {
@@ -545,6 +600,7 @@ impl Scene {
     }
 
     fn unmount(&mut self, id: NodeId) {
+        self.routes.retain(|(target, _)| *target != id);
         let node = self.nodes.remove(id).expect("validated subtree");
         if self.pressed == Some(id) {
             self.pressed = None;
@@ -758,6 +814,10 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "batch_tests.rs"]
 mod batch_tests;
+
+#[cfg(test)]
+#[path = "background_tests.rs"]
+mod background_tests;
 
 #[cfg(test)]
 mod tests {

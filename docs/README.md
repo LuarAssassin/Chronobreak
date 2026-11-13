@@ -8,6 +8,7 @@
 - [可复用核心验证](reusable-core.md)：库入口、泛型绑定、显示开关与双计数器验收。
 - [M1a 节点生命周期](node-lifecycle.md)：代际身份、keyed 命令、资源回收与真实图形验收。
 - [M1b 批处理与提交](batched-updates.md)：重入通知、批边界、传播诊断及输入几何验收。
+- [M1c 后台消息](background-messages.md)：有界背压、UI 作用域、EventLoopProxy 唤醒与验收。
 - [协作与分支](../CONTRIBUTING.md)：分支、agent 隔离、验证与合并约定。
 
 ## 外部参考
