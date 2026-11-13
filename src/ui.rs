@@ -186,6 +186,7 @@ pub(crate) struct Node {
     parent: Option<NodeId>,
     children: Vec<NodeId>,
     pub buffer: Option<Buffer>,
+    text: Option<String>,
     pub color: Color,
     pub bounds: Bounds,
     pub clip: Bounds,
@@ -217,6 +218,26 @@ pub(crate) struct Scene {
     pressed: Option<NodeId>,
     commands: Rc<Commands>,
     viewport: Option<(f32, f32)>,
+    dirty: Dirty,
+    pub commit_version: u64,
+    pub geometry_version: u64,
+    pub layouts: u64,
+    pub formats: u64,
+    present_needed: bool,
+}
+
+#[derive(Debug, Default)]
+struct Dirty {
+    structure: bool,
+    text_measurement: bool,
+    visibility: bool,
+    viewport: bool,
+}
+
+impl Dirty {
+    fn any(&self) -> bool {
+        self.structure || self.text_measurement || self.visibility || self.viewport
+    }
 }
 
 impl Drop for Scene {
@@ -244,6 +265,15 @@ impl Scene {
             pressed: None,
             commands: Rc::default(),
             viewport: None,
+            dirty: Dirty {
+                structure: true,
+                ..Dirty::default()
+            },
+            commit_version: 0,
+            geometry_version: 0,
+            layouts: 0,
+            formats: 0,
+            present_needed: true,
         };
         scene.root = Some(scene.mount(element));
         scene
@@ -268,6 +298,7 @@ impl Scene {
             parent: None,
             children,
             buffer: None,
+            text: None,
             color: element.color,
             bounds: Bounds::default(),
             clip: Bounds::default(),
@@ -304,7 +335,7 @@ impl Scene {
         if !visible {
             style.display = Display::None;
         }
-        let buffer = text.map(|text| {
+        let buffer = text.as_ref().map(|text| {
             let mut buffer = Buffer::new(
                 &mut self.fonts,
                 Metrics::new(element.font_size, element.font_size * 1.5),
@@ -312,7 +343,7 @@ impl Scene {
             buffer.set_wrap(&mut self.fonts, Wrap::WordOrGlyph);
             buffer.set_text(
                 &mut self.fonts,
-                &text,
+                text,
                 &Attrs::new().family(Family::SansSerif),
                 Shaping::Advanced,
             );
@@ -324,6 +355,7 @@ impl Scene {
         }
         let node = &mut self.nodes[index];
         node.buffer = buffer;
+        node.text = text;
         node._subscriptions = subscriptions;
         node.formatter = formatter;
         node.visible = visible;
@@ -334,27 +366,50 @@ impl Scene {
         let commands = std::mem::take(&mut *self.commands.borrow_mut());
         let mut count = 0;
         for command in commands {
+            let before = self
+                .nodes
+                .get(command.target)
+                .map(|node| node.children.clone());
             let result = self.apply(command.target, command.action);
-            count += usize::from(result.is_ok());
+            let after = self
+                .nodes
+                .get(command.target)
+                .map(|node| node.children.clone());
+            if result.is_ok() && before != after {
+                count += 1;
+                self.dirty.structure |= self.is_visible(command.target);
+            }
             command.receipt.finish(result);
         }
         let pending = std::mem::take(&mut *self.pending.borrow_mut());
         for (index, update) in pending {
+            let parent_visible = self
+                .nodes
+                .get(index)
+                .is_some_and(|node| node.parent.is_none_or(|parent| self.is_visible(parent)));
             let Some(node) = self.nodes.get_mut(index) else {
                 continue;
             };
-            count += 1;
+            let mut changed = false;
             if let Some(value) = update.text {
+                self.formats += 1;
                 let text = node.formatter.as_ref().unwrap()(value);
-                node.buffer.as_mut().unwrap().set_text(
-                    &mut self.fonts,
-                    &text,
-                    &Attrs::new().family(Family::SansSerif),
-                    Shaping::Advanced,
-                );
+                if node.text.as_ref() != Some(&text) {
+                    node.buffer.as_mut().unwrap().set_text(
+                        &mut self.fonts,
+                        &text,
+                        &Attrs::new().family(Family::SansSerif),
+                        Shaping::Advanced,
+                    );
+                    node.text = Some(text);
+                    self.dirty.text_measurement |= parent_visible && node.visible;
+                    changed = true;
+                }
             }
-            if let Some(visible) = update.visible {
+            if let Some(visible) = update.visible.filter(|visible| *visible != node.visible) {
                 node.visible = visible;
+                self.dirty.visibility |= parent_visible;
+                changed = true;
                 let mut style = self.tree.style(node.layout_id).unwrap().clone();
                 style.display = if visible {
                     Display::Flex
@@ -362,14 +417,47 @@ impl Scene {
                     Display::None
                 };
                 self.tree.set_style(node.layout_id, style).unwrap();
-                if !visible {
-                    self.pressed = None;
-                }
             }
-            node.revision += 1;
-            self.tree.mark_dirty(node.layout_id).unwrap();
+            if changed {
+                count += 1;
+                node.revision += 1;
+                self.tree.mark_dirty(node.layout_id).unwrap();
+            }
+        }
+        if let Some(pressed) = self.pressed {
+            let mut ancestor = Some(pressed);
+            while let Some(index) = ancestor {
+                let Some(node) = self.nodes.get(index).filter(|node| node.visible) else {
+                    self.pressed = None;
+                    break;
+                };
+                ancestor = node.parent;
+            }
+        }
+        if count != 0 {
+            self.commit_version += 1;
+            self.present_needed |= self.dirty.any();
         }
         count
+    }
+
+    pub fn flush(&mut self, width: f32, height: f32) -> usize {
+        let changed = self.sync();
+        self.layout(width, height);
+        changed
+    }
+
+    pub fn needs_present(&self) -> bool {
+        self.present_needed
+    }
+
+    pub fn presented(&mut self) {
+        self.present_needed = false;
+    }
+
+    fn is_visible(&self, index: NodeId) -> bool {
+        let node = &self.nodes[index];
+        node.visible && node.parent.is_none_or(|parent| self.is_visible(parent))
     }
 
     fn validate(&self, id: NodeId) -> Result<(), TreeError> {
@@ -499,7 +587,17 @@ impl Scene {
     }
 
     pub fn layout(&mut self, width: f32, height: f32) {
+        if self.viewport != Some((width, height)) {
+            self.dirty.viewport = true;
+            self.present_needed = true;
+            self.commit_version += 1;
+        }
         self.viewport = Some((width, height));
+        if !self.dirty.any() {
+            self.geometry_version = self.commit_version;
+            return;
+        }
+        let dirty = std::mem::take(&mut self.dirty);
         let root_id = self.nodes[self.root.unwrap()].layout_id;
         if self.tree.style(root_id).unwrap().size.width != length(width) {
             let mut style = self.tree.style(root_id).unwrap().clone();
@@ -551,6 +649,14 @@ impl Scene {
                 height,
             },
         );
+        self.geometry_version = self.commit_version;
+        self.layouts += 1;
+        if std::env::var_os("CHRONOBREAK_TRACE").is_some() {
+            eprintln!(
+                "layout version={} layouts={} formats={} dirty={dirty:?}",
+                self.geometry_version, self.layouts, self.formats
+            );
+        }
     }
 
     fn place(&mut self, index: NodeId, parent_x: f32, parent_y: f32, clip: Bounds) {
@@ -618,12 +724,17 @@ impl Scene {
     }
 
     pub fn pointer_button(&mut self, down: bool, x: f32, y: f32) -> bool {
-        if self.sync() > 0
-            && let Some((width, height)) = self.viewport
-        {
-            self.layout(width, height);
-        }
+        let Some((width, height)) = self.viewport else {
+            return false;
+        };
+        self.flush(width, height);
         let hit = self.hit_test(x, y);
+        if std::env::var_os("CHRONOBREAK_TRACE").is_some() {
+            eprintln!(
+                "pointer down={down} x={x} y={y} version={} hit={hit:?}",
+                self.geometry_version
+            );
+        }
         if down {
             self.pressed = hit;
             return false;
@@ -643,6 +754,10 @@ impl Scene {
 #[cfg(test)]
 #[path = "lifecycle_tests.rs"]
 mod lifecycle_tests;
+
+#[cfg(test)]
+#[path = "batch_tests.rs"]
+mod batch_tests;
 
 #[cfg(test)]
 mod tests {
@@ -882,8 +997,8 @@ mod tests {
         assert_eq!(signal.subscriber_count(), 2);
         signal.update(|value| *value = false);
         signal.update(|value| *value = true);
-        assert_eq!(scene.sync(), 1);
-        assert_eq!(scene.nodes.iter().next().unwrap().revision, 1);
+        assert_eq!(scene.sync(), 0);
+        assert_eq!(scene.nodes.iter().next().unwrap().revision, 0);
         signal.update(|value| *value = false);
         drop(scene);
         assert_eq!(signal.subscriber_count(), 0);

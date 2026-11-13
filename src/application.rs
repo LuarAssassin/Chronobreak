@@ -19,6 +19,7 @@ const RETRY_DELAY: Duration = Duration::from_millis(100);
 #[derive(Default)]
 struct RedrawSchedule {
     retry_at: Option<Instant>,
+    requested: bool,
 }
 
 impl RedrawSchedule {
@@ -31,6 +32,22 @@ impl RedrawSchedule {
             DrawOutcome::Presented => None,
             DrawOutcome::Retry => Some(now + RETRY_DELAY),
         };
+    }
+
+    fn request(&mut self, needed: bool, now: Instant) -> bool {
+        if !needed || self.requested || !self.ready(now) {
+            return false;
+        }
+        self.requested = true;
+        true
+    }
+
+    fn request_scene(&mut self, needed: bool, drawable: bool, now: Instant) -> bool {
+        if !drawable {
+            *self = Self::default();
+            return false;
+        }
+        self.request(needed, now)
     }
 
     fn take_retry(&mut self, now: Instant) -> bool {
@@ -98,15 +115,18 @@ impl Application {
             return Ok(());
         }
         let scale = window.scale_factor() as f32;
-        let changed = self.scene.sync();
-        self.scene
-            .layout(size.width as f32 / scale, size.height as f32 / scale);
+        let changed = self
+            .scene
+            .flush(size.width as f32 / scale, size.height as f32 / scale);
         let outcome = self
             .renderer
             .as_mut()
             .unwrap()
             .draw(&mut self.scene, scale)?;
         self.redraw_schedule.complete(outcome, Instant::now());
+        if outcome == DrawOutcome::Presented {
+            self.scene.presented();
+        }
         if self.trace && outcome == DrawOutcome::Presented {
             let lines: usize = self
                 .scene
@@ -116,8 +136,12 @@ impl Application {
                 .map(|buffer| buffer.layout_runs().count())
                 .sum();
             eprintln!(
-                "frame physical={}x{} scale={scale} changed={changed} text_lines={lines}",
-                size.width, size.height,
+                "frame physical={}x{} scale={scale} changed={changed} text_lines={lines} version={} layouts={} formats={}",
+                size.width,
+                size.height,
+                self.scene.geometry_version,
+                self.scene.layouts,
+                self.scene.formats,
             );
         }
         Ok(())
@@ -142,7 +166,9 @@ impl ApplicationHandler for Application {
         })();
         match result {
             Ok((window, renderer)) => {
-                window.request_redraw();
+                if self.redraw_schedule.request(true, Instant::now()) {
+                    window.request_redraw();
+                }
                 self.renderer = Some(renderer);
                 self.window = Some(window);
             }
@@ -162,20 +188,25 @@ impl ApplicationHandler for Application {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.scene.sync() > 0
-            && let Some(window) = &self.window
-        {
+        if let Some(window) = &self.window {
             let size = window.inner_size();
             let scale = window.scale_factor() as f32;
             self.scene
-                .layout(size.width as f32 / scale, size.height as f32 / scale);
+                .flush(size.width as f32 / scale, size.height as f32 / scale);
             if let Some(renderer) = &mut self.renderer {
                 renderer.collect_unmounted(&self.scene);
             }
-            window.request_redraw();
+            if self.redraw_schedule.request_scene(
+                self.scene.needs_present(),
+                !self.occluded && size.width > 0 && size.height > 0,
+                Instant::now(),
+            ) {
+                window.request_redraw();
+            }
         }
         if let Some(window) = &self.window
             && self.redraw_schedule.take_retry(Instant::now())
+            && self.redraw_schedule.request(true, Instant::now())
         {
             window.request_redraw();
         }
@@ -213,7 +244,12 @@ impl ApplicationHandler for Application {
                     .as_mut()
                     .unwrap()
                     .resize(size.width, size.height);
-                window.request_redraw();
+                let scale = window.scale_factor() as f32;
+                self.scene
+                    .flush(size.width as f32 / scale, size.height as f32 / scale);
+                if self.redraw_schedule.request(true, Instant::now()) {
+                    window.request_redraw();
+                }
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 let size = window.inner_size();
@@ -222,11 +258,16 @@ impl ApplicationHandler for Application {
                     .as_mut()
                     .unwrap()
                     .resize(size.width, size.height);
-                window.request_redraw();
+                let scale = window.scale_factor() as f32;
+                self.scene
+                    .flush(size.width as f32 / scale, size.height as f32 / scale);
+                if self.redraw_schedule.request(true, Instant::now()) {
+                    window.request_redraw();
+                }
             }
             WindowEvent::Occluded(occluded) => {
                 self.occluded = occluded;
-                if !occluded {
+                if !occluded && self.redraw_schedule.request(true, Instant::now()) {
                     window.request_redraw();
                 }
             }
@@ -242,6 +283,11 @@ impl ApplicationHandler for Application {
             } => {
                 if let Some(position) = self.cursor {
                     let scale = window.scale_factor();
+                    let size = window.inner_size();
+                    self.scene.flush(
+                        (size.width as f64 / scale) as f32,
+                        (size.height as f64 / scale) as f32,
+                    );
                     self.scene.pointer_button(
                         state == ElementState::Pressed,
                         (position.x / scale) as f32,
@@ -251,10 +297,10 @@ impl ApplicationHandler for Application {
                         .as_mut()
                         .unwrap()
                         .collect_unmounted(&self.scene);
-                    window.request_redraw();
                 }
             }
             WindowEvent::RedrawRequested => {
+                self.redraw_schedule.requested = false;
                 if let Err(error) = self.redraw() {
                     self.error = Some(error);
                     event_loop.exit();
@@ -325,5 +371,63 @@ mod tests {
             assert!(!schedule.take_retry(now + elapsed));
             assert_eq!(schedule.control_flow(), ControlFlow::Wait);
         }
+    }
+
+    #[test]
+    fn redraw_intent_coalesces_and_retry_presents_latest_commit() {
+        let value = Signal::new(0);
+        let mut scene = Scene::new(Element::bound_text(&value, |value| value.to_string()));
+        let mut schedule = RedrawSchedule::default();
+        let now = Instant::now();
+        scene.flush(400.0, 600.0);
+        assert!(schedule.request(scene.needs_present(), now));
+        assert!(!schedule.request(true, now));
+        schedule.requested = false;
+        schedule.complete(DrawOutcome::Retry, now);
+        value.update(|value| *value = 2);
+        scene.flush(400.0, 600.0);
+        assert!(!schedule.request(scene.needs_present(), now));
+        assert!(schedule.take_retry(now + RETRY_DELAY));
+        assert!(schedule.request(scene.needs_present(), now + RETRY_DELAY));
+        assert_eq!(scene.geometry_version, scene.commit_version);
+        assert_eq!(
+            scene
+                .nodes
+                .iter()
+                .next()
+                .unwrap()
+                .buffer
+                .as_ref()
+                .unwrap()
+                .lines[0]
+                .text(),
+            "2"
+        );
+        schedule.requested = false;
+        schedule.complete(DrawOutcome::Presented, now + RETRY_DELAY);
+        scene.presented();
+        assert!(!schedule.request(scene.needs_present(), now + RETRY_DELAY));
+        assert_eq!(schedule.control_flow(), ControlFlow::Wait);
+    }
+
+    #[test]
+    fn zero_size_or_occlusion_pauses_retry_without_losing_scene_intent() {
+        let mut scene = Scene::new(Element::text("pending"));
+        scene.flush(400.0, 600.0);
+        let now = Instant::now();
+        let mut schedule = RedrawSchedule::default();
+        schedule.complete(DrawOutcome::Retry, now);
+        for _ in 0..5 {
+            assert!(!schedule.request_scene(scene.needs_present(), false, now));
+            assert!(!schedule.take_retry(now + RETRY_DELAY));
+            assert_eq!(schedule.control_flow(), ControlFlow::Wait);
+            assert!(scene.needs_present());
+        }
+        assert!(schedule.request_scene(scene.needs_present(), true, now + RETRY_DELAY));
+        assert!(!schedule.request_scene(scene.needs_present(), true, now + RETRY_DELAY));
+        scene.presented();
+        schedule.requested = false;
+        schedule.complete(DrawOutcome::Presented, now + RETRY_DELAY);
+        assert!(!schedule.request_scene(scene.needs_present(), true, now + RETRY_DELAY));
     }
 }

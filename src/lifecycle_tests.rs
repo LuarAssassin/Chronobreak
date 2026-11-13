@@ -141,7 +141,7 @@ fn queued_update_unmount_slot_reuse_and_old_release_cannot_hit_new_node() {
 }
 
 #[test]
-fn already_copied_signal_listener_can_enqueue_after_unmount_but_is_ignored() {
+fn cancelled_in_flight_listener_cannot_enqueue_after_unmount() {
     let (root, children) = Element::keyed_column();
     let scene = Rc::new(RefCell::new(Scene::new(root)));
     let source = Signal::new(0);
@@ -160,7 +160,7 @@ fn already_copied_signal_listener_can_enqueue_after_unmount_but_is_ignored() {
     old_id.set(Some(old));
     source.update(|value| *value = 1);
     assert_eq!(source.subscriber_count(), 1);
-    assert_eq!(scene.borrow().pending.borrow().len(), 1);
+    assert_eq!(scene.borrow().pending.borrow().len(), 0);
     assert_eq!(scene.borrow_mut().sync(), 0);
     assert_eq!(texts(&scene.borrow()), ["计数：7"]);
     drop(early_listener);
