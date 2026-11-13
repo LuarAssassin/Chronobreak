@@ -1,6 +1,6 @@
 # M3B：受控单行输入
 
-2026-11-13，基线 `245f8eacca6b08f5838e1370e17aba274c993b75`（M3A 已经 PR #11 合入）。本块为 **M3B:B1 实现候选**，不等于独立审查、合并、M3C 或整个 M3 完成；当前状态统一见 [Alpha 状态](alpha-delivery-status.md)。
+2026-11-13；本页保留 M3B 合同及历史验收，不另维护当前候选状态。当前状态统一见 [Alpha 状态](alpha-delivery-status.md)，后续原生组合输入合同及资格缺口见 [原生 IME](native-ime.md)。
 
 ## API 与所有权
 

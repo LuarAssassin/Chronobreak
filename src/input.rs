@@ -483,7 +483,28 @@ impl Scene {
             false
         };
         if self.interaction.composing {
+            let modifiers = self.interaction.modifiers;
+            if down
+                && (modifiers.control_key() || modifiers.super_key())
+                && !modifiers.alt_key()
+                && matches!(&input.logical_key, Key::Character(text) if matches!(text.to_lowercase().as_str(), "c" | "x" | "v"))
+                && let Some(id) = self.interaction.focused
+            {
+                self.cancel_ime();
+                self.text_key(id, &input);
+            }
             return;
+        }
+        if down
+            && !input.synthetic
+            && self.ime_owner.is_some_and(|(id, _)| {
+                self.nodes
+                    .get(id)
+                    .and_then(|node| node.editor.as_ref())
+                    .is_some_and(|editor| editor.has_pending_ime())
+            })
+        {
+            self.cancel_ime();
         }
         crate::batch(|| {
             let target = self.interaction.focused.or(self.root);
