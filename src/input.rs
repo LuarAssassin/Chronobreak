@@ -119,6 +119,12 @@ impl EventContext {
 pub(super) type Handler = (EventPhase, Rc<dyn Fn(&UiEvent, &mut EventContext)>);
 
 #[derive(Default)]
+struct DispatchOutcome {
+    default_prevented: bool,
+    focus_requested: bool,
+}
+
+#[derive(Default)]
 pub(super) struct Interaction {
     pointer: Option<(f32, f32)>,
     hovered: Vec<NodeId>,
@@ -169,9 +175,9 @@ impl Scene {
             .find(|id| self.enabled(*id) && self.nodes[*id].click.is_some())
     }
 
-    fn dispatch(&mut self, target: NodeId, kind: EventKind) -> bool {
+    fn dispatch(&mut self, target: NodeId, kind: EventKind) -> DispatchOutcome {
         if !self.enabled(target) {
-            return false;
+            return DispatchOutcome::default();
         }
         let path = self.path(target);
         let event = UiEvent {
@@ -220,13 +226,16 @@ impl Scene {
         {
             self.set_capture(capture.filter(|id| self.enabled(*id)));
         }
-        if let Some(focus) = context
+        let focus = context
             .focus
-            .filter(|id| self.enabled(*id) && self.nodes[*id].focusable)
-        {
+            .filter(|id| self.enabled(*id) && self.nodes[*id].focusable);
+        if let Some(focus) = focus {
             self.set_focus(Some(focus));
         }
-        context.default_prevented
+        DispatchOutcome {
+            default_prevented: context.default_prevented,
+            focus_requested: focus.is_some(),
+        }
     }
 
     fn set_capture(&mut self, target: Option<NodeId>) {
@@ -360,7 +369,7 @@ impl Scene {
             }
             let hit = position.and_then(|(x, y)| self.deepest_hit(x, y));
             let target = self.interaction.captured.or(hit);
-            let prevented = target.is_some_and(|id| {
+            let outcome = target.map_or_else(DispatchOutcome::default, |id| {
                 self.dispatch(
                     id,
                     if down {
@@ -370,6 +379,7 @@ impl Scene {
                     },
                 )
             });
+            let prevented = outcome.default_prevented;
             if !down && self.interaction.buttons.is_empty() {
                 self.set_capture(None);
             }
@@ -379,7 +389,7 @@ impl Scene {
             let click = position.and_then(|(x, y)| self.hit_test(x, y));
             if down {
                 self.pressed = if prevented { None } else { click };
-                if !prevented {
+                if !prevented && !outcome.focus_requested {
                     let focus = hit.and_then(|id| {
                         self.path(id)
                             .into_iter()
@@ -387,6 +397,7 @@ impl Scene {
                             .find(|id| self.nodes[*id].focusable)
                     });
                     self.set_focus(focus);
+                    self.focus_reveal = None;
                 }
                 false
             } else {
@@ -463,8 +474,10 @@ impl Scene {
         }
         crate::batch(|| {
             let target = self.interaction.focused.or(self.root);
-            let prevented =
-                target.is_some_and(|id| self.dispatch(id, EventKind::Key(input.clone())));
+            let prevented = target.is_some_and(|id| {
+                self.dispatch(id, EventKind::Key(input.clone()))
+                    .default_prevented
+            });
             let space_owner = if !down && input.logical_key == Key::Named(NamedKey::Space) {
                 self.interaction.space.take()
             } else {
@@ -524,7 +537,10 @@ impl Scene {
             return;
         };
         crate::batch(|| {
-            if !self.dispatch(target, EventKind::Wheel(wheel)) {
+            if !self
+                .dispatch(target, EventKind::Wheel(wheel))
+                .default_prevented
+            {
                 self.scroll_chain(target, wheel.vertical);
             }
         });

@@ -265,6 +265,267 @@ fn moved_click_and_composed_clips_are_current_before_redraw() {
 }
 
 #[test]
+fn pointer_partial_direct_rows_keep_the_clicked_slice_at_both_edges() {
+    for (offset, pointer_y) in [(70.0, 10.0), (0.0, 70.0)] {
+        let clicks = Rc::new(Cell::new(0));
+        let observed = clicks.clone();
+        let (content, children) = Element::keyed_column();
+        let (view, handle) = Element::scroll_view(80.0, content);
+        let mut scene = Scene::new(view);
+        children.insert("before", row(60.0));
+        children.insert(
+            "target",
+            row(40.0).on_click(move || observed.set(observed.get() + 1)),
+        );
+        children.insert("after", row(200.0));
+        scene.flush(200.0, 500.0);
+        handle.scroll_to(offset);
+        scene.flush(200.0, 500.0);
+        let target = children.node("target").unwrap();
+        assert_eq!(
+            scene.nodes[target].clip.height,
+            if offset == 0.0 { 20.0 } else { 30.0 }
+        );
+        assert_eq!(scene.hit_test(10.0, pointer_y), Some(target));
+        let bounds = scene.nodes[target].bounds;
+        let clip = scene.nodes[target].clip;
+        scene.pointer_button(true, 10.0, pointer_y);
+        assert!(scene.pointer_button(false, 10.0, pointer_y));
+        assert_eq!(clicks.get(), 1);
+        assert_eq!(scene.nodes[target].bounds, bounds);
+        assert_eq!(scene.nodes[target].clip, clip);
+        assert_eq!(handle.snapshot().offset, offset);
+        assert!(scene.focus_reveal.is_none());
+        assert_eq!(scene.hit_test(10.0, pointer_y), Some(target));
+        assert_eq!(scene.geometry_version, scene.commit_version);
+    }
+}
+
+#[test]
+fn pointer_nested_oversized_rows_keep_the_clicked_slice_with_non_scroll_clipping() {
+    for clip_height in [20.0, 40.0] {
+        let clicks = Rc::new(Cell::new(0));
+        let observed = clicks.clone();
+        let (content, children) = Element::keyed_column();
+        let (inner_view, inner) = Element::scroll_view(40.0, content);
+        let (outer_view, outer) = Element::scroll_view(
+            100.0,
+            Element::column()
+                .child(row(200.0))
+                .child(Element::column().height(clip_height).child(inner_view))
+                .child(row(200.0)),
+        );
+        let mut scene = Scene::new(outer_view);
+        children.insert(
+            "target",
+            row(200.0).on_click(move || observed.set(observed.get() + 1)),
+        );
+        scene.flush(200.0, 600.0);
+        inner.scroll_to(160.0);
+        outer.scroll_to(120.0);
+        scene.flush(200.0, 600.0);
+        let target = children.node("target").unwrap();
+        assert_eq!(scene.nodes[target].clip.height, 20.0);
+        assert_eq!(scene.hit_test(10.0, 90.0), Some(target));
+        let bounds = scene.nodes[target].bounds;
+        let clip = scene.nodes[target].clip;
+        scene.pointer_button(true, 10.0, 90.0);
+        assert!(scene.pointer_button(false, 10.0, 90.0));
+        assert_eq!(clicks.get(), 1);
+        assert_eq!(inner.snapshot().offset, 160.0);
+        assert_eq!(outer.snapshot().offset, 120.0);
+        assert_eq!(scene.nodes[target].bounds, bounds);
+        assert_eq!(scene.nodes[target].clip, clip);
+        assert!(scene.focus_reveal.is_none());
+        assert_eq!(scene.hit_test(10.0, 90.0), Some(target));
+        assert!(scene.nodes[target].clip.height <= clip_height);
+    }
+}
+
+fn pointer_child_with_distinct_focus_ancestor(offset: f32, pointer_y: f32) {
+    let clicks = Rc::new(Cell::new(0));
+    let observed = clicks.clone();
+    let (content, children) = Element::keyed_column();
+    let (view, handle) = Element::scroll_view(80.0, content);
+    let mut scene = Scene::new(view);
+    children.insert("before", row(60.0));
+    let child = row(20.0)
+        .on_click(move || observed.set(observed.get() + 1))
+        .focusable(false);
+    let ancestor = if offset == 0.0 {
+        row(60.0).focusable(true).child(child).child(row(40.0))
+    } else {
+        row(60.0).focusable(true).child(row(40.0)).child(child)
+    };
+    children.insert("ancestor", ancestor);
+    children.insert("after", row(200.0));
+    scene.flush(200.0, 500.0);
+    handle.scroll_to(offset);
+    scene.flush(200.0, 500.0);
+    let ancestor = children.node("ancestor").unwrap();
+    let target = scene.hit_test(10.0, pointer_y).unwrap();
+    assert_ne!(target, ancestor);
+    assert!(!scene.nodes[target].focusable);
+    let bounds = scene.nodes[target].bounds;
+    let clip = scene.nodes[target].clip;
+    scene.pointer_button(true, 10.0, pointer_y);
+    let activated = scene.pointer_button(false, 10.0, pointer_y);
+    assert!(
+        activated && clicks.get() == 1,
+        "offset {offset} -> {}; child y {} -> {}; clicks={}",
+        handle.snapshot().offset,
+        bounds.y,
+        scene.nodes[target].bounds.y,
+        clicks.get()
+    );
+    assert_eq!(scene.nodes[target].bounds, bounds);
+    assert_eq!(scene.nodes[target].clip, clip);
+    assert_eq!(handle.snapshot().offset, offset);
+    assert_eq!(scene.geometry_version, scene.commit_version);
+}
+
+#[test]
+fn pointer_bottom_child_does_not_reveal_a_different_focus_rectangle() {
+    pointer_child_with_distinct_focus_ancestor(0.0, 70.0);
+}
+
+#[test]
+fn pointer_top_child_does_not_reveal_a_different_focus_rectangle() {
+    pointer_child_with_distinct_focus_ancestor(100.0, 10.0);
+}
+
+#[test]
+fn pointer_explicit_event_focus_still_reveals_and_uses_current_release_geometry() {
+    for (phase, child_focusable) in [
+        (EventPhase::Capture, false),
+        (EventPhase::Bubble, false),
+        (EventPhase::Bubble, true),
+    ] {
+        let clicks = Rc::new(Cell::new(0));
+        let observed = clicks.clone();
+        let (content, children) = Element::keyed_column();
+        let (view, handle) = Element::scroll_view(80.0, content);
+        let mut scene = Scene::new(view);
+        children.insert("before", row(60.0));
+        children.insert(
+            "ancestor",
+            row(60.0)
+                .focusable(true)
+                .on_event(phase, |event, context| {
+                    if matches!(event.kind, EventKind::PointerDown(_)) {
+                        context.focus();
+                    }
+                })
+                .child(
+                    row(20.0)
+                        .on_click(move || observed.set(observed.get() + 1))
+                        .focusable(child_focusable),
+                )
+                .child(row(40.0)),
+        );
+        children.insert("after", row(200.0));
+        scene.flush(200.0, 500.0);
+        let ancestor = children.node("ancestor").unwrap();
+        scene.pointer_button(true, 10.0, 70.0);
+        scene.flush(200.0, 500.0);
+        assert_eq!(handle.snapshot().offset, 40.0);
+        assert_eq!(scene.nodes[ancestor].bounds.y, 20.0);
+        assert!(!scene.pointer_button(false, 10.0, 70.0));
+        assert_eq!(clicks.get(), 0);
+    }
+}
+
+#[test]
+fn pointer_explicit_target_focus_reveals_a_direct_row() {
+    let clicks = Rc::new(Cell::new(0));
+    let observed = clicks.clone();
+    let (content, children) = Element::keyed_column();
+    let (view, handle) = Element::scroll_view(80.0, content);
+    let mut scene = Scene::new(view);
+    children.insert("before", row(60.0));
+    children.insert(
+        "target",
+        row(40.0)
+            .on_click(move || observed.set(observed.get() + 1))
+            .on_event(EventPhase::Target, |event, context| {
+                if matches!(event.kind, EventKind::PointerDown(_)) {
+                    context.focus();
+                }
+            }),
+    );
+    children.insert("after", row(200.0));
+    scene.flush(200.0, 500.0);
+    scene.pointer_button(true, 10.0, 70.0);
+    assert!(scene.pointer_button(false, 10.0, 70.0));
+    assert_eq!(clicks.get(), 1);
+    assert_eq!(handle.snapshot().offset, 20.0);
+    assert_eq!(scene.nodes[children.node("target").unwrap()].bounds.y, 40.0);
+}
+
+#[test]
+fn pointer_default_focus_then_explicit_reveal_still_moves_the_same_control() {
+    let clicks = Rc::new(Cell::new(0));
+    let observed = clicks.clone();
+    let (content, children) = Element::keyed_column();
+    let (view, handle) = Element::scroll_view(80.0, content);
+    let mut scene = Scene::new(view);
+    children.insert("before", row(60.0));
+    children.insert(
+        "target",
+        row(40.0).on_click(move || observed.set(observed.get() + 1)),
+    );
+    children.insert("after", row(200.0));
+    scene.flush(200.0, 500.0);
+    scene.pointer_button(true, 10.0, 70.0);
+    assert!(scene.pointer_button(false, 10.0, 70.0));
+    assert_eq!(clicks.get(), 1);
+    let target = children.node("target").unwrap();
+    let receipt = handle.scroll_into_view(target);
+    scene.flush(200.0, 500.0);
+    assert_eq!(receipt.result(), Some(Ok(())));
+    assert_eq!(handle.snapshot().offset, 20.0);
+    assert_eq!(scene.nodes[target].bounds.y, 40.0);
+    handle.scroll_to(0.0);
+    for _ in 0..3 {
+        scene.flush(200.0, 500.0);
+    }
+    assert_eq!(handle.snapshot().offset, 0.0);
+}
+
+#[test]
+fn explicit_keyboard_event_focus_still_reveals_after_pointer_default_focus() {
+    let clicks = Rc::new(Cell::new(0));
+    let observed = clicks.clone();
+    let (view, handle) = Element::scroll_view(80.0, Element::column()
+        .child(row(60.0))
+        .child(row(60.0).focusable(true)
+            .on_event(EventPhase::Capture, |event, context| {
+                if matches!(&event.kind, EventKind::Key(input) if input.logical_key == Key::Named(NamedKey::F1)) {
+                    context.focus();
+                }
+            })
+            .child(row(20.0).on_click(move || observed.set(observed.get() + 1)))
+            .child(row(40.0)))
+        .child(row(200.0)));
+    let mut scene = Scene::new(view);
+    scene.flush(200.0, 500.0);
+    scene.pointer_button(true, 10.0, 70.0);
+    assert!(scene.pointer_button(false, 10.0, 70.0));
+    assert_eq!(clicks.get(), 1);
+    assert_eq!(handle.snapshot().offset, 0.0);
+    scene.keyboard(KeyInput {
+        logical_key: Key::Named(NamedKey::F1),
+        physical_key: PhysicalKey::Code(KeyCode::F1),
+        location: KeyLocation::Standard,
+        state: ElementState::Pressed,
+        repeat: false,
+        synthetic: false,
+    });
+    scene.flush(200.0, 500.0);
+    assert_eq!(handle.snapshot().offset, 40.0);
+}
+
+#[test]
 fn stationary_pointer_reconciles_hover_after_scroll_and_tree_changes() {
     let entries = Rc::new(Cell::new(0));
     let observed = entries.clone();

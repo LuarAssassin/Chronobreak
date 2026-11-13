@@ -23,7 +23,7 @@ let focus_only = Element::text("仅焦点区域").focusable(true).disabled(false
 
 - `.on_event(phase, Fn(&UiEvent, &mut EventContext))` 可多次注册，同节点同阶段按注册顺序调用。闭包可更新 Signal、排队 Children 命令，不得到 Scene、Renderer 或 arena 可变引用。
 - `UiEvent.kind` 为指针 down/move/up/enter/leave/cancel、CaptureLost 或 `Key(KeyInput)`；`position` 是逻辑窗口坐标 `Option<(f32, f32)>`，未知则为 `None`，不编造离窗坐标。键盘目标不由此坐标决定。
-- `EventContext` 提供 `target/current_target/phase`、独立 `stop_propagation()/prevent_default()` 及查询、`capture_pointer()/release_pointer()/focus()`。捕获与焦点请求在路由后应用；同一路由后请求覆盖前请求。显式请求不是默认动作，`prevent_default` 不撤销它们；若显式聚焦要覆盖随后指针默认聚焦，同时阻止默认动作。
+- `EventContext` 提供 `target/current_target/phase`、独立 `stop_propagation()/prevent_default()` 及查询、`capture_pointer()/release_pointer()/focus()`。捕获与焦点请求在路由后应用；同一路由后请求覆盖前请求。显式请求不是默认动作，`prevent_default` 不撤销它们。M2b 更新：有效显式 focus 请求优先于随后指针默认聚焦，不必为保留焦点而阻止默认点击；指针默认聚焦不自动滚动，键盘/显式焦点转移仍揭示，详见 [纵向视口](scroll-views.md)。
 - `KeyInput` 保留 winit 的 logical/physical key、location、state、repeat、synthetic；修饰键在 `UiEvent.modifiers`。根导出 `keyboard`、`ElementState`、`MouseButton`，不把所有键伪装为文本。应用消费没有另设含糊的布尔返回值，传播与默认行为互不混用。
 - `.disabled_when(&Signal<bool>)` 挂载读取最新值，后续按属性最终值提交；优先于静态 `.disabled(bool)`。父禁用排除整个后代的输入/Tab，保持布局与绘制；禁用区域不透明穿透到可点击祖先。
 
@@ -35,7 +35,7 @@ let focus_only = Element::text("仅焦点区域").focusable(true).disabled(false
 
 | 输入 | 路由后的默认动作 |
 | --- | --- |
-| 左键按下 | 记录最近可点击祖先作为 pressed 激活候选；聚焦命中路径最近的可聚焦节点，没有则清焦点。阻止默认动作同时阻止这两项 |
+| 左键按下 | 记录最近可点击祖先作为 pressed 激活候选；无有效显式 focus 请求时聚焦命中路径最近的可聚焦节点，没有则清焦点。默认聚焦不排队滚动揭示；阻止默认动作同时阻止记录候选与默认聚焦 |
 | 左键松开 | 仅 pressed 与当前真实命中的最近可点击控件一致且本次未 prevent 时激活一次；捕获不改变这一判据。松开在控件外/未知坐标不激活 |
 | 其他鼠标按钮 | 正常路由，不默认聚焦/激活。最后一个按键释放时自动释放捕获 |
 | Tab / Shift+Tab 按下 | 有效树的先序顺序正向/反向循环；隐藏、禁用及显式 opt-out 跳过；初次正向首项、反向末项，空树无动作 |

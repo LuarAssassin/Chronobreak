@@ -58,7 +58,9 @@ app.run().unwrap();
 
 ## 焦点、超大目标与比例条
 
-Tab/Shift+Tab 保持 M2a 稳定有效树序。只在焦点**转移**时排队一次 reveal，安全提交时由内到外最近边缘对齐：小目标在上方对齐其上边缘，在下方对齐下边缘；已可见不动。不会在遍历中变更几何，也不会每次 flush 因旧焦点离屏而吸回手动滚轮或 `scroll_to/by`。原 Enter/Space 激活及 prevent 规则不变；此切片没有新增 PageUp/PageDown/Home/End 默认滚动。
+Tab/Shift+Tab 保持 M2a 稳定有效树序。键盘、有效 `EventContext::focus()` 或失效焦点回退引起的焦点**转移**排队一次 reveal，安全提交时由内到外最近边缘对齐：小目标在上方对齐其上边缘，在下方对齐下边缘；已可见不动。**左键默认聚焦不自动揭示，并清除默认路径的待揭示目标**，避免按下与松开之间因聚焦另一个矩形的祖先而移动被点击子控件；即使默认焦点未变也不留下待揭示项。有效显式 focus 请求优先于指针默认聚焦，仍按焦点转移规则揭示；不必 prevent_default 才保留该请求。`scroll_into_view` 始终保持显式揭示语义。不会在遍历中变更几何，也不会每次 flush 因旧焦点离屏而吸回手动滚轮或 `scroll_to/by`。原 Enter/Space 激活及 prevent 规则不变；此切片没有新增 PageUp/PageDown/Home/End 默认滚动。
+
+显式焦点转移、显式滚动或业务结构变更仍可有意移动控件；松开仍使用**当前**命中/clip 和有效完整身份决定是否激活，不缓存按下几何，也不对已删除、复用或已移出指针的控件补发点击。仅调用 `focus()` 指向已聚焦节点不构成转移；若需要再次揭示它，使用 `scroll_into_view`。
 
 目标比视口高时：若跨过视口两边，维持当前 offset；整体偏上时对齐其下边缘，整体偏下时对齐其上边缘，再 clamp。对零高视口、嵌套/非滚动祖先裁剪，仅承诺这个有限几何政策，不承诺不可能的完整可见，也不改变非滚动祖先的尺寸/clip。
 
@@ -74,7 +76,7 @@ Tab/Shift+Tab 保持 M2a 稳定有效树序。只在焦点**转移**时排队一
 
 ## 验证与保留证据
 
-所有构建目标、临时目录、软件渲染缓存、原始二进制、脚本、日志与匹配窗口裁剪截图位于本工作树 `.local/verification/`（忽略提交，交协调者审阅后清理）。基线 88 unit + 4 doc；P2 修复后 **114 unit + 4 doc 全通过**，其中 26 个直接滚动回归（原候选 23 + 本次 3），未删除或弱化旧测试。原候选 `9a71bf6` 的证据保持历史身份；协调者已发布相同内容为 `a355281fb7924b49ba23205684219639fb9ea26d` / PR #10，本次保留本地提交链，不 reset、push、认证或合并；仍待协调者复审与远端 CI，不宣告 M2b accepted。
+所有构建目标、临时目录、软件渲染缓存、原始二进制、脚本、日志与匹配窗口裁剪截图位于本工作树 `.local/verification/`（忽略提交，交协调者审阅后清理）。基线 88 unit + 4 doc；P2 历史记录为 114 unit + 4 doc、26 个滚动回归；当前指针聚焦修复后 **122 unit + 4 doc 全通过**，其中 **34 个滚动回归**（新增 8 项），未删除或弱化旧测试。原候选 `9a71bf6` 的证据保持历史身份；协调者已发布相同内容为 `a355281fb7924b49ba23205684219639fb9ea26d` / PR #10，随后发布嵌套区间修复为 `b6b14a0be3fd8429fe073cc8a0f84238266b9c00`，本次以该头提交为父节点，不 reset、push、认证或合并；仍待协调者复审与远端 CI，不宣告 M2b accepted。
 
 四个精确门禁均通过：
 
@@ -112,3 +114,17 @@ cargo build --examples --locked
 M1c 短烟测 `background-smoke/` 验证真实后台线程无输入交付到 10/10、随后实际点击计数 +1、空闲帧稳定为 14，并经 WM_DELETE_WINDOW 正常退出（约 30ms）；保留日志、checks.json 和三张窗口裁剪图。未重跑无关的 20,001 条突发长验收，完整公平/关闭逻辑回归仍在 111 项中。
 
 验证限制：Xvfb 的 EGL/DRI3 警告后实际选择 Vulkan CPU adapter，不是 GPU 硬件资格。初始失败探针误选宿主 Wayland，且非 root 的 `-nolock` 未抑制自身 X191 lock；停止后仅清除此探针自身陈旧 lock，保留 `probe-1x/` 日志。后续修正为取消 Wayland 环境、`-displayfd` + 禁用 unix/local transport 的独立 TCP X server，未再创建 `/tmp` socket/lock，未操作宿主应用。未实测原生 Wayland、IME、真实硬件滚轮/触控、Windows/macOS 或系统无障碍；不把 winit M2 事件当作 M3 支持证据。
+
+### PR10 late pointer-focus review — 2026-11-13
+
+Thread `PRRT_kwDOVsJnZc63Gc0p` reviewed `a355281fb7924b49ba23205684219639fb9ea26d`, not the current nested-interval fix. Deterministic tests were added and run **before changing runtime behavior**, against `b6b14a0be3fd8429fe073cc8a0f84238266b9c00`. Ordinary directly focused partial top/bottom rows and nested oversized targets with intermediate clipping **activated correctly**: nearest-edge reveal preserves the previously visible slice. Those cases do not reproduce the bot's general claim.
+
+A narrower real failure remains when an actionable `.focusable(false)` child focuses a different rectangle belonging to its ancestor. In an 80px viewport, the bottom case has a 60px ancestor at y=60 and a 20px clickable child at y=60; clicking y=70 queues ancestor reveal, moving offset 0→40 and child y=60→20 before release. The top case starts at offset 100 with the ancestor at y=−40 and its final 20px child at y=0; clicking y=10 moves offset 100→60 and child y=0→40. **Both had zero actual click activations.** `pointer-focus/regression-before.log` records exactly these two failures while direct/nested controls pass; `regression-after.log` records both fixed. The final tests additionally require unchanged target bounds/clip and scroll offsets, not just event delivery or receipts.
+
+The runtime change only separates default pointer focus from reveal-producing focus. Routing now reports whether it applied a valid explicit focus request; that request takes precedence, including when the child is independently focusable. Default pointer focus otherwise uses the existing focus/Space transition then clears pending automatic reveal. Tab/Shift+Tab, explicit EventContext focus changes, fallback and scoped `scroll_into_view` keep the existing reveal algorithm. No cached hit geometry, stale activation or changes to `src/scroll.rs`.
+
+New evidence is exclusively under `.local/verification/pointer-focus/`; earlier root and `postfix/` evidence remains historical and untouched. Four exact gates pass with **122 unit + 4 doc tests**, including 34 scroll tests. Logs are `fmt.log`, `clippy.log`, `test.log`, `build-examples.log`, `gates.tsv`; the final post-documentation pass uses `final-` prefixes. Existing manual-scroll/no-snapback, Space, cleanup, stale/scope and current-geometry regressions remain enabled.
+
+Only a short new GUI probe ran, not the full historical GUI suite or pressure/LLM runs. `probe.rs` gives a 30px actionable non-focusable child clipped to 20px at either viewport edge, inside a distinct 60px focus ancestor. The probe executable is `bin/scroll_views` (SHA-256 `755a12c71fb1ac1a86e69df548693ffd40de309256e71e39886748cbfa462ba8`); it is **not** the example executable. The newly built example is separately retained as `bin/scroll_views_example` (SHA-256 `3f8b1af5a8395864af724d3920b38510d5e1be412ccea22f64a12c75b2455330`). `provenance.json`, `SOURCE_SHA256SUMS` and `bin/SHA256SUMS` bind parent, source and executables.
+
+At **1.0× and 1.5×, all 10 short checks pass**: bottom activation +1 at offset 0, top activation +1 at offset 200, stable interior pixels through press/release, Tab offset 360, Shift+Tab offset 160, reset 0, explicit reveal 360 and short idle/no panic. `gui-*/checks.json`, `app.log`, nine matched-window PNGs, `screenshots.tsv`, `close.txt` and `cleanup.json` retain actual actions, coordinates, offsets and hashes. Window crops are 760×520 / 1140×780; bottom 1× and top 1.5× activation images were visually inspected. Both applications exited via WM_DELETE_WINDOW with code 0 in 29ms; both owned X servers stopped. `driver-preflight.log` records cua-driver 0.38.0 without a running daemon; the isolated historical Xvfb/XTest/Pillow route was reused, without starting or altering host services. These are software-Vulkan X11 probe results, not native Wayland, hardware-wheel, accessibility or cross-platform certification.
