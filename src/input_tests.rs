@@ -134,6 +134,84 @@ fn propagation_and_default_are_independent_and_controls_do_not_double_activate()
 }
 
 #[test]
+fn stop_propagation_keeps_same_node_phase_handlers_and_default_independent() {
+    for prevent in [false, true] {
+        let outer = Signal::new(0);
+        let inner = Signal::new(0);
+        let trace = Rc::new(RefCell::new(Vec::new()));
+        let first = trace.clone();
+        let second = trace.clone();
+        let mut scene = scene(
+            button(&outer)
+                .on_event(EventPhase::Capture, move |event, context| {
+                    if matches!(
+                        event.kind,
+                        EventKind::PointerDown(_) | EventKind::PointerUp(_)
+                    ) {
+                        assert!(!context.propagation_stopped());
+                        assert!(!context.default_prevented());
+                        first.borrow_mut().push(("first", event.kind.clone()));
+                        context.stop_propagation();
+                        if prevent {
+                            context.prevent_default();
+                        }
+                    }
+                })
+                .on_event(EventPhase::Capture, move |event, context| {
+                    if matches!(
+                        event.kind,
+                        EventKind::PointerDown(_) | EventKind::PointerUp(_)
+                    ) {
+                        assert_eq!(context.phase, EventPhase::Capture);
+                        assert_ne!(context.current_target, context.target);
+                        assert!(context.propagation_stopped());
+                        assert_eq!(context.default_prevented(), prevent);
+                        second.borrow_mut().push(("second", event.kind.clone()));
+                    }
+                })
+                .on_event(EventPhase::Bubble, |event, _| {
+                    if matches!(
+                        event.kind,
+                        EventKind::PointerDown(_) | EventKind::PointerUp(_)
+                    ) {
+                        panic!("stopped event must not reach bubble");
+                    }
+                })
+                .child(button(&inner).on_event(EventPhase::Target, |event, _| {
+                    if matches!(
+                        event.kind,
+                        EventKind::PointerDown(_) | EventKind::PointerUp(_)
+                    ) {
+                        panic!("stopped event must not reach the later node");
+                    }
+                })),
+        );
+        let child = scene.nodes[scene.root.unwrap()].children[0];
+        let bounds = scene.nodes[child].bounds;
+        scene.pointer_button(true, bounds.x + 1.0, bounds.y + 1.0);
+        assert_eq!(
+            scene.interaction.focused,
+            if prevent { None } else { Some(child) }
+        );
+        assert_eq!(
+            scene.pointer_button(false, bounds.x + 1.0, bounds.y + 1.0),
+            !prevent
+        );
+        assert_eq!(inner.get(), usize::from(!prevent));
+        assert_eq!(outer.get(), 0);
+        assert_eq!(
+            *trace.borrow(),
+            vec![
+                ("first", EventKind::PointerDown(MouseButton::Left)),
+                ("second", EventKind::PointerDown(MouseButton::Left)),
+                ("first", EventKind::PointerUp(MouseButton::Left)),
+                ("second", EventKind::PointerUp(MouseButton::Left)),
+            ]
+        );
+    }
+}
+
+#[test]
 fn handler_structure_commands_are_deferred_through_bubble_and_default() {
     let (list, children) = Element::keyed_column();
     let count = Signal::new(0);

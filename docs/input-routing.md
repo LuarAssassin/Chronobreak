@@ -87,7 +87,9 @@ cargo test --workspace --locked
 cargo build --examples --locked
 ```
 
-**87 unit + 4 doc 全通过**：其中新增 20 项输入回归、1 项后端 DPI 坐标回归，保留原 66 unit + 4 doc。覆盖精确三层 trace、target/current_target、stop/prevent 独立、延迟结构提交、捕获 move/up/离窗/显式释放/失效、隐藏禁用父级、hover 几何重算、Tab/反向/回退/重排、Enter/Space/OS repeat/焦点转移、键与修饰载荷、可见焦点且不重排、无坐标释放及旧代际。没有重跑千帧 GUI 压测；既有 1,000 次挂卸的逻辑测试仍随完整 suite 执行。
+**88 unit + 4 doc 全通过**：其中新增 21 项输入回归、1 项后端 DPI 坐标回归，保留原 66 unit + 4 doc。覆盖精确三层 trace、target/current_target、stop/prevent 独立、延迟结构提交、捕获 move/up/离窗/显式释放/失效、隐藏禁用父级、hover 几何重算、Tab/反向/回退/重排、Enter/Space/OS repeat/焦点转移、键与修饰载荷、可见焦点且不重排、无坐标释放及旧代际。没有重跑千帧 GUI 压测；既有 1,000 次挂卸的逻辑测试仍随完整 suite 执行。
+
+独立审查后仅补充 `cfg(test)` 回归及本段计数：同节点同 capture 阶段的首监听器停止传播后，第二监听器仍按注册顺序执行，观察传播标志与可选的默认阻止标志；后续节点不执行，默认聚焦/激活仅受 `prevent_default` 影响。缓存重跑四项 gate 的新日志为 `post-gui-same-node-{fmt,clippy,test,build}.log`（另有定向 `post-gui-same-node-focused.log`）。运行时代码未变，未重跑 GUI；`evidence-sha256.json` 仅追加测试后变更元数据，保留原 GUI 二进制、源码差异及文件哈希，以下图形结果仍属原验证。
 
 实际环境：隔离 Xvfb 1600×1400×24，无窗口管理器；xdotool XTEST 输入，Pillow XCB 截图；llvmpipe LLVM 21.1.8 / Mesa 26.0.8 / Vulkan；`WINIT_X11_SCALE_FACTOR=1.0/1.5`。每次根据当前 pid 查询窗口并读取几何，宽屏 `(60,40,760,760)` 或 `(60,40,1140,1140)`，窄屏 400×900 或 600×1350；PNG 从整个 Xvfb 帧精确裁到实际应用窗口，稳定 presented 后才取图。没有把窗外黑桌面或标题当绘制缺陷。
 
