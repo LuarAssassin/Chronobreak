@@ -13,6 +13,7 @@
 //! }
 //! ```
 
+mod accessibility;
 mod application;
 mod children;
 mod messages;
