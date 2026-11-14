@@ -102,6 +102,10 @@ struct Boundary {
 pub struct Semantics(Rc<RefCell<Boundary>>);
 
 impl Semantics {
+    pub(crate) fn version(&self) -> u64 {
+        self.0.borrow().snapshot.version
+    }
+
     pub fn snapshot(&self) -> SemanticSnapshot {
         self.0.borrow().snapshot.clone()
     }

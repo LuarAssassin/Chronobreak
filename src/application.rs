@@ -24,6 +24,13 @@ fn logical_position(position: PhysicalPosition<f64>, scale: f64) -> (f32, f32) {
 #[derive(Debug)]
 enum UserEvent {
     Messages,
+    Accessibility(accesskit_winit::Event),
+}
+
+impl From<accesskit_winit::Event> for UserEvent {
+    fn from(event: accesskit_winit::Event) -> Self {
+        Self::Accessibility(event)
+    }
 }
 
 #[derive(Default)]
@@ -84,6 +91,11 @@ impl RedrawSchedule {
 }
 
 pub struct Application {
+    adapter: Option<accesskit_winit::Adapter>,
+    bridge: crate::accessibility::Bridge,
+    accessibility_version: Option<(u64, f64)>,
+    semantics: crate::Semantics,
+    proxy: Option<winit::event_loop::EventLoopProxy<UserEvent>>,
     renderer: Option<Renderer>,
     window: Option<Arc<Window>>,
     scene: Scene,
@@ -100,10 +112,18 @@ pub struct Application {
 
 impl Application {
     pub fn new(root: Element) -> Self {
+        let semantics = crate::Semantics::default();
+        let mut scene = Scene::new(root);
+        scene.set_semantics(semantics.clone());
         Self {
+            adapter: None,
+            bridge: crate::accessibility::Bridge::default(),
+            accessibility_version: None,
+            semantics,
+            proxy: None,
             renderer: None,
             window: None,
-            scene: Scene::new(root),
+            scene,
             title: "Chronobreak".into(),
             cursor: None,
             occluded: false,
@@ -129,6 +149,7 @@ impl Application {
 
     /// 安装真正由提交生产、由事件循环消费动作的 UI 线程边界，非 OS 适配器。
     pub fn semantics(mut self, semantics: &crate::Semantics) -> Self {
+        self.semantics = semantics.clone();
         self.scene.set_semantics(semantics.clone());
         self
     }
@@ -136,6 +157,7 @@ impl Application {
     pub fn run(mut self) -> Result<()> {
         let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
         let proxy = event_loop.create_proxy();
+        self.proxy = Some(proxy.clone());
         self.scene.wake.install(Arc::new(move || {
             proxy.send_event(UserEvent::Messages).is_ok()
         }));
@@ -265,7 +287,28 @@ fn wake_ime_requests(window: &Window, title: &str) {
 }
 
 impl ApplicationHandler<UserEvent> for Application {
-    fn user_event(&mut self, _: &ActiveEventLoop, _: UserEvent) {
+    fn user_event(&mut self, _: &ActiveEventLoop, event: UserEvent) {
+        if let UserEvent::Accessibility(event) = event {
+            if self
+                .window
+                .as_ref()
+                .is_none_or(|window| window.id() != event.window_id)
+            {
+                return;
+            }
+            if matches!(
+                event.window_event,
+                accesskit_winit::WindowEvent::InitialTreeRequested
+                    | accesskit_winit::WindowEvent::AccessibilityDeactivated
+            ) {
+                self.accessibility_version = None;
+            }
+            if let accesskit_winit::WindowEvent::ActionRequested(request) = event.window_event
+                && let Some((id, action)) = self.bridge.request(request)
+            {
+                self.semantics.perform(id, action);
+            }
+        }
         self.messages_ready = true;
         if self.trace {
             eprintln!("user_event messages_ready");
@@ -273,6 +316,7 @@ impl ApplicationHandler<UserEvent> for Application {
     }
 
     fn exiting(&mut self, _: &ActiveEventLoop) {
+        self.adapter = None;
         self.scene.close_messages();
     }
 
@@ -284,6 +328,7 @@ impl ApplicationHandler<UserEvent> for Application {
             let window = Arc::new(
                 event_loop.create_window(
                     Window::default_attributes()
+                        .with_visible(false)
                         .with_title(&self.title)
                         .with_inner_size(LogicalSize::new(760.0, 520.0)),
                 )?,
@@ -293,6 +338,12 @@ impl ApplicationHandler<UserEvent> for Application {
         })();
         match result {
             Ok((window, renderer)) => {
+                self.adapter = Some(accesskit_winit::Adapter::with_event_loop_proxy(
+                    event_loop,
+                    &window,
+                    self.proxy.as_ref().unwrap().clone(),
+                ));
+                window.set_visible(true);
                 if self.redraw_schedule.request(true, Instant::now()) {
                     window.request_redraw();
                 }
@@ -315,6 +366,9 @@ impl ApplicationHandler<UserEvent> for Application {
         self.scene.ime_ready = false;
         self.ime_disabling = false;
         self.ime_geometry = None;
+        self.adapter = None;
+        self.bridge = crate::accessibility::Bridge::default();
+        self.accessibility_version = None;
         self.renderer = None;
         self.window = None;
         self.cursor = None;
@@ -360,6 +414,16 @@ impl ApplicationHandler<UserEvent> for Application {
         {
             window.request_redraw();
         }
+        if let (Some(adapter), Some(window)) = (&mut self.adapter, &self.window) {
+            let version = (self.semantics.version(), window.scale_factor());
+            if self.accessibility_version != Some(version) {
+                adapter.update_if_active(|| {
+                    self.accessibility_version = Some(version);
+                    self.bridge
+                        .update(&self.semantics.snapshot(), &self.title, version.1)
+                });
+            }
+        }
         self.sync_ime();
         let control_flow = self.redraw_schedule.with_blink(self.scene.blink_deadline());
         event_loop.set_control_flow(control_flow);
@@ -379,6 +443,9 @@ impl ApplicationHandler<UserEvent> for Application {
         };
         if window.id() != window_id {
             return;
+        }
+        if let Some(adapter) = &mut self.adapter {
+            adapter.process_event(window, &event);
         }
         if self.trace
             && matches!(
