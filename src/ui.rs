@@ -1273,6 +1273,10 @@ impl Scene {
 mod lifecycle_tests;
 
 #[cfg(test)]
+#[path = "performance_tests.rs"]
+mod performance_tests;
+
+#[cfg(test)]
 #[path = "batch_tests.rs"]
 mod batch_tests;
 

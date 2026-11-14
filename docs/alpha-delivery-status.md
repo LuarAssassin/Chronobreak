@@ -5,11 +5,11 @@
 - **授权与当前范围**：历史上已落实 M3a 停止，随后恢复 M4B；`2026-11-14T08:47:27.432Z` 的 M4B-only 范围现已被用户 `2026-11-14T09:19:27.259Z` 的明确指令覆盖：**持续推进全部 33 个工作块直到完成**，问题记录后继续可独立工作。M4B 沿用保留实现，不重写；后续 M5A/M5B/M5C、M6A/M6B、M7 连续推进。实现仍在隔离分支交付，须通过独立审查、最终候选门禁、远端 CI 与受保护主线合并；外部受阻或未验证项目不得计为完成。
 - **已合入基线**：M1a/M1b/M1c（PR #6/#7/#8）、M2a（PR #9）、M2b 初始纵向视口（PR #10）、M3A 逻辑编辑模型（PR #11）、M3B 单行 TextInput / FB-2（PR #12）、M3C 原生 IME / reproducibility FB-3（PR #13）及 **M4A 有限视觉基础（PR #14）**；基线 `a92390b38d006fa82caa9b2aff37ee65a72939f0`，205 unit + 6 doc、12 examples。合同见 [文字模型](text-edit-model.md)、[单行输入](text-input.md)、[原生 IME](native-ime.md)、[视觉原语](visual-primitives.md)。M3C 正式资格仅限下述 Fcitx5 tuple，不代表通用 IME 或跨平台资格。
 - **M3C 资格范围**：**Ubuntu 26.04.1 amd64 + winit 0.30.13/XIM + Fcitx5 5.1.19-1 + Pinyin 5.1.12-1/libime 1.1.14-1 + classic UI**；tracked-only clean archive 的 `c1`/`c2`、真实 XTEST 1.0× / 1.5× 各 **14/14**，含系统候选在嵌套滚动、同窗移动与重排后无额外击键跟随，外部 clipboard reader 各 2/2。**IBus 1.5.34~rc2-1/libpinyin 仍各 11/14，三项候选跟随失败未修复**；Wayland 实验性、未获本轮资格。本次视觉块保留此运行时，不重复宣称新引擎资格。
-- **后续已合入**：M4B 语义主题与有限控件（PR #15）、M5A 版本化知识文档与原子本地存储（PR #16）；当前主线 `98189c751a50e60d4af4aae5e0587d672c752db1`，230 library tests + 5 schema example tests + 6 doctests。合同见 [主题与控件](themes-controls.md) 与 [知识文档](knowledge-document.md)；不代表 OS 无障碍桥接或网络资格。
-- **当前候选**：`feat/offline-workbench` 的 **M5B 离线知识工作台**；主动粘贴、原文预览、自动先序树图/连接线、选择/折叠/滚动、主题、异步保存/重启恢复见 [离线工作台](offline-workbench.md)。真实隔离 X11 流程 17/17 通过，仍须独立审查及受保护 PR/CI/主线复验；不将本地实现称为已合入。
-- **后续未完成**：M5B 最终审查/合并、M5C 真实单次网络闭环；M6 性能/资源/AccessKit 系统适配与无障碍/平台资格；M7 打包/许可落地及全部门禁后的发布，以及其他 engine/backend 的额外资格。未实施、受阻或未验证的块仍未完成。多行编辑器、通用横向滚动、完整视觉 bidi 不在本轮小核心交付内。
+- **后续已合入**：M4B 主题/控件（PR #15）、M5A 知识文档（PR #16）、M5B 离线工作台（PR #17）；当前主线 `e7152d08ef4a250847d124947f78fe53c5320e60`，230 library tests + 12 example tests + 6 doctests；M5B 合并后真实离线 GUI 17/17 复验。合同见 [主题与控件](themes-controls.md)、[知识文档](knowledge-document.md)、[离线工作台](offline-workbench.md)。不代表 OS 无障碍或网络资格。
+- **当前候选**：`feat/performance-qualification` 的 M6A 有限性能/资源测量，范围、预算校准失败及复测见 [性能资格](performance-qualification.md)；仍须独立审查、受保护 PR/CI 和主线复验。M5C 网关为独立未审候选，不已合入。
+- **后续未完成**：M5C 真实请求成功/持久恢复证据，M6A 最终资格/合并、M6B 真实 AccessKit/Linux 系统适配及 M7 许可/打包/最终门禁。M5C 唯一授权合成请求已触发，但验证器半行日志竞争中断，未取得最终服务结果；一次性锁保留，绝不隐式重试。仅再次实网验证需新的明确授权，不阻止独立性能、平台和打包准备。
 - **已确认决策**：用户委托后由协调者选择 **MIT OR Apache-2.0**、**Linux X11 优先资格 / Wayland 实验性**；平台资格仍需对应实测，实际许可文件留 M7 打包块落地，尚不宣称已实施。首接服务仅 **DeepSeek Flash**（路线已登记官方 `https://api.deepseek.com`、OpenAI chat 格式与 `deepseek-flash`）；这是接入方向，不是可用性验证。以上委托及确认由本次 FB-1 任务回填，主题沿用既定方向，无新增产品范围。
-- **凭据与验证边界**：原始 key 仅留私有 `.env`，空值由 owner 填写；尚无真实网络调用证明。本次 M4B 不读取 `.env`/密钥，不连接模型服务、不改 provider/全局设置或主机输入法；不将服务决策当作 key/服务已验证，不将许可证选择当作许可文件已落地。原文再发布与用户桌面设置不在本次授权内。
+- **凭据与验证边界**：仅 M5C worker 读取指定私有 `.env`，key 不进入聊天、argv、日志或 Git；仅固定非私密合成文本送往已确认服务。M6A 不读取任何凭据、不联网调用模型、不改全局设置或输入法。唯一一次请求已耗用但未获得成功/失败结论，不伪称网络验收通过。
 - **发布条件**：用户已授权仅在**全部强制门禁通过后发布 GitHub Alpha prerelease**，不是提前放行、正式版或 crates.io 发布授权；本次 FB-1 任务回填该条件，不宣称任何发布已经执行。
 
 ## M4B 验证入口
