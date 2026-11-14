@@ -121,6 +121,18 @@ impl Application {
         self
     }
 
+    /// 显式启用统一语义主题；默认保留既有应用的 M4A 配色。
+    pub fn theme(mut self, theme: &crate::ThemeController) -> Self {
+        self.scene.set_theme(theme.clone());
+        self
+    }
+
+    /// 安装真正由提交生产、由事件循环消费动作的 UI 线程边界，非 OS 适配器。
+    pub fn semantics(mut self, semantics: &crate::Semantics) -> Self {
+        self.scene.set_semantics(semantics.clone());
+        self
+    }
+
     pub fn run(mut self) -> Result<()> {
         let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
         let proxy = event_loop.create_proxy();

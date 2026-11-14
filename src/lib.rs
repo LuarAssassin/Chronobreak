@@ -18,10 +18,14 @@ mod children;
 mod messages;
 mod node;
 mod render;
+pub mod semantics;
 pub mod signal;
 pub mod text_edit;
+pub mod theme;
 pub mod ui;
 pub mod visual;
+pub use semantics::{ActionKind, ActionResult, Role, SemanticAction, Semantics};
+pub use theme::{SemanticTheme, ThemeColor, ThemeController, ThemeMode};
 
 pub use application::Application;
 pub use children::{Children, CommandReceipt, TreeError};

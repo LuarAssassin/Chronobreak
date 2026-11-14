@@ -422,6 +422,7 @@ impl Renderer {
         let mut primitive_draws = 0;
         let mut text_render_calls = 0;
         let view = frame.texture.create_view(&Default::default());
+        let clear = crate::visual::linear(frame_view.clear);
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -431,10 +432,10 @@ impl Renderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.025,
-                            g: 0.035,
-                            b: 0.06,
-                            a: 1.0,
+                            r: clear[0] as f64,
+                            g: clear[1] as f64,
+                            b: clear[2] as f64,
+                            a: clear[3] as f64,
                         }),
                         store: wgpu::StoreOp::Store,
                     },

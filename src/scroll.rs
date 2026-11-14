@@ -420,7 +420,7 @@ impl Scene {
                 height: thumb,
             },
             clip: node.clip,
-            color: [0.55, 0.68, 0.80, 0.85],
+            color: self.edit_color(crate::ThemeColor::Muted, [0.55, 0.68, 0.80, 0.85]),
         });
     }
 }
