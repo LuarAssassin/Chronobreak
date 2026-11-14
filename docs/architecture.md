@@ -58,6 +58,10 @@ M2b 初始纵向滚动已合入 **PR #10**。`Element::scroll_view(height, conte
 
 flush 先提交结构/属性并测量、clamp，再执行排队滚动与一次性焦点揭示，刷新 placement，最后对静止指针重算 hover。新焦点只排队揭示，不在 Tab 遍历中变更几何，不因旧焦点每次 flush 抢回手动滚动。滚轮走实际指针命中路径而非捕获 owner；先完成普通路由，未 prevent 时独立执行由内到外的剩余量链，stop 不改变默认链。geometry_version 包含滚动提交，无变化不请求帧。100ms surface Retry、零尺寸/遮挡/Wait 与 M1c 公平调度不变。完整 API/有限可见性政策见 [纵向视口](scroll-views.md)。横向、虚拟化、惯性/平滑/触控、M3 编辑/IME、主题、任务运行时和 LLM 产品不在此切片。
 
+## 语义主题与活 UI 边界
+
+`src/theme.rs` 集中有限颜色角色，`src/themed.rs` 将控制状态解析为 paint，`src/semantics.rs` 承载应用可消费的活快照/合并 delta/动作回执。Application 安装主题与语义 handle，正式 flush 先验证动作和同步模型，再提交几何、焦点与快照；主题颜色只失效 paint，不改变文字 resource version 或重挂节点。保持旧应用显式 opt-in、M4A sRGB/alpha、M1c 唤醒公平性及编辑/IME 会话合同。具体 API、状态、真实像素和保留测试只在 [主题与控件](themes-controls.md) 维护；OS AccessKit 适配与资格留 M6B，不把内部快照称为无障碍完成。
+
 ## 参考来源
 
 设计背景来自 [AKR 的原文](https://x.com/i/article/2120793311216836608)，归档边界见 [参考资料索引](README.md)。参考原文是学习资料，不是已经验证的实现或性能保证。

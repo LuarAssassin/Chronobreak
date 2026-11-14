@@ -129,10 +129,10 @@ struct DispatchOutcome {
 #[derive(Default)]
 pub(super) struct Interaction {
     pointer: Option<(f32, f32)>,
-    hovered: Vec<NodeId>,
+    pub(super) hovered: Vec<NodeId>,
     pub(super) captured: Option<NodeId>,
     pub(super) focused: Option<NodeId>,
-    space: Option<(NodeId, PhysicalKey)>,
+    pub(super) space: Option<(NodeId, PhysicalKey)>,
     held: HashSet<PhysicalKey>,
     buttons: HashSet<MouseButton>,
     pub(super) modifiers: ModifiersState,
@@ -250,7 +250,7 @@ impl Scene {
         }
     }
 
-    fn set_focus(&mut self, target: Option<NodeId>) {
+    pub(super) fn set_focus(&mut self, target: Option<NodeId>) {
         if self.interaction.focused != target {
             self.text_focus_changed(self.interaction.focused, target);
             self.interaction.focused = target;
@@ -368,7 +368,8 @@ impl Scene {
         position: Option<(f32, f32)>,
     ) -> bool {
         self.prepare_input();
-        crate::batch(|| {
+        let previous_pressed = self.pressed;
+        let activated = crate::batch(|| {
             self.interaction.pointer = position;
             self.reconcile_hover();
             if down {
@@ -423,16 +424,21 @@ impl Scene {
                     false
                 }
             }
-        })
+        });
+        self.present_needed |= previous_pressed != self.pressed;
+        activated
     }
 
-    fn activate(&self, id: NodeId) {
+    pub(super) fn activate(&self, id: NodeId) {
         if let Some(click) = self
             .nodes
             .get(id)
-            .filter(|_| self.enabled(id))
+            .filter(|node| self.enabled(id) && !node.readonly)
             .and_then(|node| node.click.as_ref())
         {
+            if let Some(toggle) = &self.nodes[id].presentation.toggle {
+                toggle.update(|value| *value = !*value);
+            }
             click();
         }
     }
@@ -442,7 +448,7 @@ impl Scene {
             self.stop_text_drag(target);
             self.dispatch(target, EventKind::PointerCancel);
         }
-        self.pressed = None;
+        self.present_needed |= self.pressed.take().is_some();
         self.interaction.buttons.clear();
         self.set_capture(None);
     }
@@ -513,6 +519,7 @@ impl Scene {
                     .default_prevented
             });
             let space_owner = if !down && input.logical_key == Key::Named(NamedKey::Space) {
+                self.present_needed |= self.interaction.space.is_some();
                 self.interaction.space.take()
             } else {
                 None
@@ -555,6 +562,7 @@ impl Scene {
                     }
                 }
                 Key::Named(NamedKey::Space) if down => {
+                    self.present_needed = true;
                     self.interaction.space =
                         self.interaction.focused.map(|id| (id, input.physical_key));
                 }
@@ -610,9 +618,15 @@ impl Scene {
             return;
         }
         let node = &self.nodes[id];
-        let bounds = node.bounds;
+        let bounds = node.bounds.intersect(node.clip);
         let thickness = 2.0_f32.min(bounds.width / 2.0).min(bounds.height / 2.0);
-        let color = if focused {
+        let color = if self.theme.is_some() || node.presentation.control.is_some() {
+            self.palette().color(if focused {
+                crate::ThemeColor::Focus
+            } else {
+                crate::ThemeColor::Muted
+            })
+        } else if focused {
             [1.0, 0.80, 0.30, 1.0]
         } else {
             [0.65, 0.70, 0.76, 1.0]

@@ -164,7 +164,7 @@ let tree = Element::canvas(500.0, 160.0)
         .child(Element::text("Knowledge").positioned(12.0, 12.0)));
 ```
 
-真实树图见 `examples/visual_primitives.rs`；固定参考场景、有限资源循环与原生复验脚本均为 tracked source，不依赖私有 helper。无主题引擎、控件目录或自由画布。
+真实树图见 `examples/visual_primitives.rs`；固定参考场景、有限资源循环与原生复验脚本均为 tracked source，不依赖私有 helper。运行时语义色板、有限控件及活语义边界见 [主题与控件](docs/themes-controls.md)，演示 `cargo run --example themes_controls --locked`；不是完整控件目录或自由画布。
 
 ## 入口
 
@@ -175,4 +175,4 @@ let tree = Element::canvas(500.0, 160.0)
 
 ## 许可
 
-项目暂未选择开源许可证。第三方文章全文和媒体保留本地，公开仓库只提供来源引用与归档说明。
+已选择 MIT OR Apache-2.0，许可文件在 M7 落地，当前不宣称许可文件已交付；发布门禁见 [Alpha 状态](docs/alpha-delivery-status.md)。第三方文章全文和媒体保留本地，公开仓库只提供来源引用与归档说明。

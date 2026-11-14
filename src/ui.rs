@@ -20,9 +20,12 @@ mod input;
 mod scroll;
 #[path = "text_input.rs"]
 mod text_input;
+#[path = "themed.rs"]
+mod themed;
 pub use input::{EventContext, EventKind, EventPhase, KeyInput, UiEvent, WheelInput};
 use input::{Handler, Interaction};
 pub use scroll::{ScrollError, ScrollHandle, ScrollReceipt, ScrollSnapshot};
+use themed::Presentation;
 
 /// 归一化 sRGB RGB + 线性 straight alpha；有限输入钳位到 [0, 1]。
 pub type Color = [f32; 4];
@@ -66,6 +69,7 @@ impl Bounds {
 }
 
 pub struct Element {
+    presentation: Presentation,
     style: Style,
     text: Option<String>,
     font_size: f32,
@@ -92,6 +96,7 @@ pub struct Element {
 impl Element {
     pub fn column() -> Self {
         Self {
+            presentation: Presentation::default(),
             style: Style {
                 flex_direction: FlexDirection::Column,
                 min_size: Size {
@@ -141,6 +146,8 @@ impl Element {
     pub fn text_input(value: &Signal<String>) -> Self {
         let mut element = Self::bound_text(value, |value| text_input::single_line(&value));
         element.editor = Some(value.clone());
+        element.presentation.control = Some(crate::theme::ControlStyle::Input);
+        element.presentation.role = Some(crate::Role::TextInput);
         element.focusable = Some(true);
         element.style.min_size.height = length(35.0_f32);
         element
@@ -292,6 +299,7 @@ impl Element {
     /// 文字颜色使用 sRGB / straight alpha，与 background 相同。
     pub fn color(mut self, color: Color) -> Self {
         self.color = crate::visual::color(color);
+        self.presentation.explicit_color = true;
         self
     }
 
@@ -378,6 +386,8 @@ impl Element {
 }
 
 pub(crate) struct Node {
+    presentation: Presentation,
+    readonly: bool,
     layout_id: taffy::NodeId,
     parent: Option<NodeId>,
     children: Vec<NodeId>,
@@ -436,6 +446,7 @@ pub(crate) struct TextResource<'a> {
 }
 
 pub(crate) struct Frame<'a> {
+    pub clear: Color,
     pub fonts: &'a mut FontSystem,
     pub commands: Vec<Paint>,
     pub texts: BTreeMap<NodeId, TextResource<'a>>,
@@ -443,6 +454,12 @@ pub(crate) struct Frame<'a> {
 }
 
 pub(crate) struct Scene {
+    theme: Option<crate::ThemeController>,
+    theme_subscription: Option<Subscription>,
+    theme_mode: Option<crate::ThemeMode>,
+    theme_generation: u64,
+    style_states: BTreeMap<NodeId, (bool, bool, bool)>,
+    semantics: Option<crate::Semantics>,
     pub(crate) wake: Arc<Wake>,
     routes: VecDeque<(NodeId, Box<dyn Route>)>,
     pub fonts: FontSystem,
@@ -485,6 +502,12 @@ impl Dirty {
 
 impl Drop for Scene {
     fn drop(&mut self) {
+        if let Some(semantics) = &self.semantics {
+            semantics.publish(Vec::new());
+            for (_, _, receipt) in semantics.requests() {
+                receipt.finish(crate::ActionResult::Unavailable);
+            }
+        }
         self.close_messages();
         for node in self.nodes.iter() {
             if let Some(container) = &node.container {
@@ -497,6 +520,12 @@ impl Drop for Scene {
 impl Scene {
     pub fn new(element: Element) -> Self {
         let mut scene = Self {
+            theme: None,
+            theme_subscription: None,
+            theme_mode: None,
+            theme_generation: 0,
+            style_states: BTreeMap::new(),
+            semantics: None,
             wake: Arc::default(),
             routes: VecDeque::new(),
             fonts: FontSystem::new(),
@@ -544,6 +573,8 @@ impl Scene {
             .new_with_children(element.style.clone(), &child_ids)
             .unwrap();
         let index = self.nodes.insert(Node {
+            presentation: element.presentation,
+            readonly: element.readonly,
             layout_id,
             parent: None,
             children,
@@ -648,6 +679,7 @@ impl Scene {
         node.editor = editor;
         node.visible = visible;
         node.disabled = disabled.unwrap_or(node.disabled);
+        node.readonly = readonly;
         node.focusable = element.focusable.unwrap_or(node.click.is_some());
         for route in element.messages {
             route.attach(&self.wake);
@@ -761,12 +793,15 @@ impl Scene {
                 self.present_needed |= parent_visible && node.visible;
                 count += 1;
             }
-            if let Some(readonly) = update.readonly
-                && let Some(editor) = &mut node.editor
-                && editor.readonly != readonly
+            if let Some(readonly) = update
+                .readonly
+                .filter(|readonly| *readonly != node.readonly)
             {
-                editor.readonly = readonly;
-                editor.invalidate();
+                node.readonly = readonly;
+                if let Some(editor) = &mut node.editor {
+                    editor.readonly = readonly;
+                    editor.invalidate();
+                }
                 self.present_needed = true;
                 count += 1;
             }
@@ -786,10 +821,13 @@ impl Scene {
 
     pub fn flush(&mut self, width: f32, height: f32) -> usize {
         let changed = self.sync();
+        self.consume_semantic_actions();
+        self.sync_theme();
         self.layout(width, height);
         self.commit_scrolls();
         self.reconcile_hover();
         self.track_text_caret();
+        self.publish_semantics();
         changed
     }
 
@@ -1047,7 +1085,11 @@ impl Scene {
                 if node.editor.is_some() {
                     None
                 } else {
-                    Some(bounds.width)
+                    Some(if node.presentation.control.is_some() {
+                        (bounds.width - layout.padding.left - layout.padding.right).max(0.0)
+                    } else {
+                        bounds.width
+                    })
                 },
                 None,
             );
@@ -1087,7 +1129,7 @@ impl Scene {
                 let Paint::Text(id) = command else {
                     return None;
                 };
-                Some((*id, self.text_geometry(*id)))
+                Some((*id, (self.text_geometry(*id), self.resolved_color(*id))))
             })
             .collect();
         let texts = commands
@@ -1097,7 +1139,7 @@ impl Scene {
                     return None;
                 };
                 let node = self.nodes.get(*id)?;
-                let (origin, clip) = geometry[id];
+                let ((origin, clip), color) = geometry[id];
                 Some((
                     *id,
                     TextResource {
@@ -1105,7 +1147,7 @@ impl Scene {
                         version: node.text_version,
                         origin,
                         clip,
-                        color: node.color,
+                        color,
                     },
                 ))
             })
@@ -1116,6 +1158,16 @@ impl Scene {
             .filter(|node| node.buffer.is_some())
             .count();
         Frame {
+            clear: if self.theme.is_some() {
+                self.palette().color(crate::ThemeColor::Background)
+            } else {
+                [
+                    crate::linear_to_srgb(0.025),
+                    crate::linear_to_srgb(0.035),
+                    crate::linear_to_srgb(0.06),
+                    1.0,
+                ]
+            },
             fonts: &mut self.fonts,
             commands,
             texts,
@@ -1146,8 +1198,9 @@ impl Scene {
         if node.clip.width <= 0.0 || node.clip.height <= 0.0 {
             return;
         }
-        if node.decoration.radius == 0.0 && node.decoration.border.is_none() {
-            if let Some(color) = node.background {
+        let (background, decoration) = self.resolved_style(index);
+        if decoration.radius == 0.0 && decoration.border.is_none() {
+            if let Some(color) = background {
                 paints.push(Paint::Rect {
                     bounds: node.bounds,
                     clip: node.ancestor_clip,
@@ -1158,13 +1211,16 @@ impl Scene {
             paints.push(Paint::Shape {
                 bounds: node.bounds,
                 clip: node.ancestor_clip,
-                color: node.background.unwrap_or([0.0; 4]),
-                radius: node.decoration.radius,
-                border: node.decoration.border,
+                color: background.unwrap_or([0.0; 4]),
+                radius: decoration.radius,
+                border: decoration.border,
                 blur: 0.0,
             });
         }
-        if let Some(segment) = node.segment {
+        if let Some(mut segment) = node.segment {
+            if let Some(role) = node.presentation.connector {
+                segment.color = self.palette().color(role);
+            }
             paints.push(Paint::Segment {
                 origin: [node.bounds.x, node.bounds.y],
                 clip: node.ancestor_clip,
@@ -1181,6 +1237,7 @@ impl Scene {
             self.paint(*child, paints);
         }
         self.paint_interaction(index, paints);
+        self.paint_control_indicator(index, paints);
         self.paint_scroll_indicator(index, paints);
     }
 
@@ -1230,6 +1287,10 @@ mod scroll_tests;
 #[cfg(test)]
 #[path = "visual_tests.rs"]
 mod visual_tests;
+
+#[cfg(test)]
+#[path = "themes_tests.rs"]
+mod themes_tests;
 
 #[cfg(test)]
 mod tests {

@@ -257,6 +257,17 @@ pub(super) struct ClipboardService {
 }
 
 impl Scene {
+    pub(super) fn semantic_text_value(&mut self, id: NodeId, value: &str) -> bool {
+        self.refresh_controlled(id);
+        let editor = self.nodes[id].editor.as_mut().unwrap();
+        if editor.readonly || editor.has_pending_ime() {
+            return false;
+        }
+        editor.model.select_all();
+        editor.model.replace_selection(&single_line(value));
+        self.finish_text_action(id);
+        true
+    }
     pub(crate) fn ime_target(&self) -> Option<(NodeId, u64)> {
         let id = self.interaction.focused?;
         let editor = self.nodes.get(id)?.editor.as_ref()?;
@@ -492,6 +503,15 @@ impl Scene {
                 (inner.x - editor.offset, inner.y),
                 inner.intersect(node.clip),
             )
+        } else if node.presentation.control.is_some() {
+            let padding = self.tree.layout(node.layout_id).unwrap().padding;
+            let inner = Bounds {
+                x: node.bounds.x + padding.left,
+                y: node.bounds.y + padding.top,
+                width: (node.bounds.width - padding.left - padding.right).max(0.0),
+                height: (node.bounds.height - padding.top - padding.bottom).max(0.0),
+            };
+            ((inner.x, inner.y), inner.intersect(node.clip))
         } else {
             ((node.bounds.x, node.bounds.y), node.clip)
         }
@@ -759,7 +779,7 @@ impl Scene {
                         height: 1.0,
                     },
                     clip,
-                    color: [1.0, 0.85, 0.4, 1.0],
+                    color: self.edit_color(crate::ThemeColor::Focus, [1.0, 0.85, 0.4, 1.0]),
                 });
             }
             if span.range.start < selected.end && span.range.end > selected.start {
@@ -771,7 +791,7 @@ impl Scene {
                         height: geometry.height,
                     },
                     clip,
-                    color: [0.18, 0.35, 0.56, 1.0],
+                    color: self.edit_color(crate::ThemeColor::Selection, [0.18, 0.35, 0.56, 1.0]),
                 });
             }
         }
@@ -802,7 +822,7 @@ impl Scene {
                 height: geometry.height,
             },
             clip,
-            color: [1.0, 0.85, 0.4, 1.0],
+            color: self.edit_color(crate::ThemeColor::Text, [1.0, 0.85, 0.4, 1.0]),
         });
     }
 
