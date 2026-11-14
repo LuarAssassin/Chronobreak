@@ -1,0 +1,13 @@
+{
+  "scope": "Provisional Linux i7-11700 dev opt-level=2 CPU scene qualification only; not universal frame rate",
+  "cold_us": 50000,
+  "max_us": 60000,
+  "rss_growth_kib": 512,
+  "p95_us": {
+    "workbench128": 20000,
+    "controls128": 200,
+    "unicode64": 40000,
+    "dynamic128": 6000,
+    "background64": 12000
+  }
+}
