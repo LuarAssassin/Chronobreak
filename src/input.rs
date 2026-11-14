@@ -620,7 +620,7 @@ impl Scene {
         let node = &self.nodes[id];
         let bounds = node.bounds.intersect(node.clip);
         let thickness = 2.0_f32.min(bounds.width / 2.0).min(bounds.height / 2.0);
-        let color = if self.theme.is_some() || node.presentation.control.is_some() {
+        let color = if self.uses_control_theme(id) {
             self.palette().color(if focused {
                 crate::ThemeColor::Focus
             } else {

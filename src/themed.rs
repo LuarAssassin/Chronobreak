@@ -182,6 +182,14 @@ impl Scene {
         self.style_states = states;
     }
 
+    pub(super) fn uses_control_theme(&self, id: NodeId) -> bool {
+        self.theme.is_some()
+            || self.nodes[id]
+                .presentation
+                .control
+                .is_some_and(|control| control != ControlStyle::Input)
+    }
+
     pub(super) fn resolved_color(&self, id: NodeId) -> Color {
         let node = &self.nodes[id];
         let presentation = &node.presentation;
@@ -197,10 +205,7 @@ impl Scene {
                 ThemeColor::Text
             }
         });
-        if self.theme.is_some()
-            || presentation.control.is_some()
-            || presentation.foreground.is_some()
-        {
+        if self.uses_control_theme(id) || presentation.foreground.is_some() {
             self.palette().color(role)
         } else {
             node.color

@@ -441,6 +441,29 @@ fn explicit_app_colors_override_tokens_and_legacy_is_unchanged() {
 }
 
 #[test]
+fn unthemed_text_input_preserves_legacy_text_and_focus_colors() {
+    let value = Signal::new("legacy input".to_owned());
+    let mut scene = Scene::new(Element::text_input(&value));
+    scene.flush(400.0, 600.0);
+    let id = scene.root.unwrap();
+    assert_eq!(scene.frame().texts[&id].color, [0.86, 0.90, 0.96, 1.0]);
+    tap(&mut scene, NamedKey::Tab);
+    assert_eq!(scene.interaction.focused, Some(id));
+    let mut paints = Vec::new();
+    scene.paint_interaction(id, &mut paints);
+    assert_eq!(paints.len(), 4);
+    for paint in paints {
+        assert!(matches!(
+            paint,
+            Paint::Rect {
+                color: [1.0, 0.80, 0.30, 1.0],
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
 fn clipped_full_viewport_focus_ring_is_inside_effective_clip() {
     let (mut scene, _, semantics) = setup(Element::button("full").height(900.0));
     let id = scene.root.unwrap();
